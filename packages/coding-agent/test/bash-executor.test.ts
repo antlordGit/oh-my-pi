@@ -1,0 +1,893 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { resetSettingsForTest, Settings, type ShellMinimizerSettings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { buildMinimizerOptions, executeBash } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
+import { DEFAULT_MAX_BYTES } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
+import * as shellSnapshot from "@oh-my-pi/pi-coding-agent/utils/shell-snapshot";
+import type { Shell } from "@oh-my-pi/pi-natives";
+import * as piNatives from "@oh-my-pi/pi-natives";
+
+// Matches the schema default for `tools.artifactHeadBytes` (20 KB) used by
+// OutputSink when bash-executor pulls settings via resolveOutputSinkHeadBytes.
+const ARTIFACT_HEAD_BYTES_DEFAULT = 20 * 1024;
+const BACKGROUND_COMPLETION_RACE_MS = 750;
+const KILL_MARKER_DELAY_SECONDS = "0.4";
+const KILL_MARKER_DELAY_MS = 400;
+// We prove a killed process never wrote its marker by observing until the
+// wall-clock instant the marker WOULD have appeared (spawn + delay) plus a
+// margin. Anchoring the deadline to a pre-spawn timestamp — instead of blindly
+// sleeping a fixed amount after executeBash returns — keeps the wait bounded
+// without shrinking the kill-propagation margin: the timeout/abort fires at
+// ~100ms, well before the 400ms marker write, so the margin between kill and
+// write is unchanged; only the redundant observation tail goes away.
+const KILL_MARKER_OBSERVE_MARGIN_MS = 300;
+
+function makeTempDir(): string {
+	return fs.mkdtempSync(path.join(os.tmpdir(), "omp-bash-exec-"));
+}
+
+/** Spin-wait until the wall-clock deadline, polling rather than blind-sleeping. */
+async function waitUntil(deadlineMs: number): Promise<void> {
+	while (Date.now() < deadlineMs) {
+		await Bun.sleep(20);
+	}
+}
+
+describe("executeBash", () => {
+	let tempDir: string;
+
+	beforeEach(async () => {
+		tempDir = makeTempDir();
+		resetSettingsForTest();
+		await Settings.init({ inMemory: true, cwd: tempDir });
+	});
+
+	afterEach(() => {
+		resetSettingsForTest();
+		vi.restoreAllMocks();
+		if (fs.existsSync(tempDir)) {
+			fs.rmSync(tempDir, { recursive: true });
+		}
+	});
+
+	it("omits minimizer options when the feature is disabled", () => {
+		const group: ShellMinimizerSettings = {
+			enabled: false,
+			settingsPath: undefined,
+			only: [],
+			except: [],
+			maxCaptureBytes: 4096,
+			sourceOutlineLevel: "default",
+			legacyFilters: undefined,
+		};
+		expect(buildMinimizerOptions(group)).toBeUndefined();
+	});
+
+	it("forwards source outline and legacy filter settings to native minimizer options", () => {
+		const group: ShellMinimizerSettings = {
+			enabled: true,
+			settingsPath: "minimizer.toml",
+			only: ["git"],
+			except: ["docker"],
+			maxCaptureBytes: 1234,
+			sourceOutlineLevel: "aggressive",
+			legacyFilters: true,
+		};
+		expect(buildMinimizerOptions(group)).toEqual({
+			enabled: true,
+			settingsPath: "minimizer.toml",
+			only: ["git"],
+			except: ["docker"],
+			maxCaptureBytes: 1234,
+			sourceOutlineLevel: "aggressive",
+			legacyFilters: true,
+		});
+	});
+	it("returns non-zero exit codes without cancellation", async () => {
+		const result = await executeBash("exit 7", { cwd: tempDir, timeout: 5000 });
+		expect(result.exitCode).toBe(7);
+		expect(result.cancelled).toBe(false);
+	});
+
+	it("honors cwd", async () => {
+		const result = await executeBash("pwd", { cwd: tempDir, timeout: 5000 });
+		expect(result.output.trim()).toBe(fs.realpathSync(tempDir));
+	});
+
+	it("canonicalizes symlinked cwd before execution", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const realDir = path.join(tempDir, "real");
+		const linkDir = path.join(tempDir, "link");
+		fs.mkdirSync(realDir);
+		fs.symlinkSync(realDir, linkDir, "dir");
+
+		const result = await executeBash("pwd", { cwd: linkDir, timeout: 5000 });
+		expect(result.output.trim()).toBe(fs.realpathSync(linkDir));
+	});
+
+	it("passes env vars", async () => {
+		const result = await executeBash("echo $PI_TEST_ENV", {
+			cwd: tempDir,
+			timeout: 5000,
+			env: { PI_TEST_ENV: "hello" },
+		});
+		expect(result.output.trim()).toBe("hello");
+	});
+
+	it("applies non-interactive environment defaults", async () => {
+		const result = await executeBash('echo "$GIT_TERMINAL_PROMPT:$PI_TEST_ENV"', {
+			cwd: tempDir,
+			timeout: 5000,
+			env: { PI_TEST_ENV: "hello" },
+		});
+		expect(result.output.trim()).toBe("0:hello");
+	});
+
+	it("runs non-bash shellPath commands through the configured shell", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-shellpath-"));
+		const marker = path.join(shellDir, "fake-shell-ran");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const fakeShell = path.join(shellDir, "fake-shell");
+		fs.writeFileSync(
+			fakeShell,
+			`#!/bin/sh
+printf '%s\\n' "$*" > '${markerEscaped}'
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-c" ]; then
+		shift
+		exec /bin/sh -c "$1"
+	fi
+	shift
+done
+exit 64
+`,
+		);
+		fs.chmodSync(fakeShell, 0o755);
+		Settings.instance.set("shellPath", fakeShell);
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: fakeShell,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: tempDir,
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("printf 'shell-ok\\n'", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "custom-shell-path",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("shell-ok");
+			expect(fs.readFileSync(marker, "utf8")).toContain("-l -c");
+		} finally {
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
+	});
+
+	it("uses executable SHELL for user-shell shortcut commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const originalShell = Bun.env.SHELL;
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-env-shell-"));
+		const marker = path.join(shellDir, "env-shell-ran");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const fakeShell = path.join(shellDir, "fish");
+		fs.writeFileSync(
+			fakeShell,
+			`#!/bin/sh
+printf '%s\\n' "$*" > '${markerEscaped}'
+while [ "$#" -gt 0 ]; do
+	if [ "$1" = "-c" ]; then
+		shift
+		exec /bin/sh -c "$1"
+	fi
+	shift
+done
+exit 64
+`,
+		);
+		fs.chmodSync(fakeShell, 0o755);
+		Bun.env.SHELL = fakeShell;
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: tempDir,
+				SHELL: "/bin/bash",
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("printf 'env-shell-ok\\n'", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "env-user-shell",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("env-shell-ok");
+			expect(fs.readFileSync(marker, "utf8")).toContain("-l -c");
+			expect(fs.readFileSync(marker, "utf8")).not.toContain("-i");
+		} finally {
+			if (originalShell === undefined) {
+				delete Bun.env.SHELL;
+			} else {
+				Bun.env.SHELL = originalShell;
+			}
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
+	});
+
+	it("loads zshrc aliases for user-shell shortcut commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const zshPath = ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh", "/opt/homebrew/bin/zsh"].find(candidate =>
+			fs.existsSync(candidate),
+		);
+		if (!zshPath) {
+			return;
+		}
+
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-shellpath-"));
+		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
+		Settings.instance.set("shellPath", zshPath);
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: zshPath,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: shellDir,
+			},
+			prefix: undefined,
+		});
+
+		try {
+			const result = await executeBash("pi_shell_alias", {
+				cwd: tempDir,
+				timeout: 5000,
+				sessionKey: "zsh-shell-path",
+				useUserShell: true,
+			});
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			expect(result.output.trim()).toBe("zsh-alias-ok");
+		} finally {
+			fs.rmSync(shellDir, { recursive: true, force: true });
+		}
+	});
+
+	it("invokes onChunk with command output", async () => {
+		let seenChunk: string | null = null;
+		const result = await executeBash("echo hello", {
+			cwd: tempDir,
+			timeout: 5000,
+			onChunk: chunk => {
+				if (seenChunk === null) {
+					seenChunk = chunk;
+				}
+			},
+		});
+		expect(result.output.trim()).toBe("hello");
+		expect(seenChunk).not.toBeNull();
+		expect(seenChunk ?? "").toContain("hello");
+	});
+
+	it("returns even if command spawns a background job", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const runPromise = executeBash("{ sleep 2; } & echo fg", {
+			cwd: tempDir,
+			timeout: 5000,
+		});
+		const timed = await Promise.race([
+			runPromise.then(result => ({ type: "result" as const, result })),
+			Bun.sleep(BACKGROUND_COMPLETION_RACE_MS).then(() => ({ type: "timeout" as const })),
+		]);
+		expect(timed.type).toBe("result");
+		if (timed.type === "result") {
+			expect(timed.result.output).toContain("fg");
+		}
+	});
+
+	it("returns a real PID for background external commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const result = await executeBash('python3 -c "import time; time.sleep(10)" & echo $!', {
+			cwd: tempDir,
+			timeout: 5000,
+		});
+		const pid = Number.parseInt(result.output.trim(), 10);
+		expect(Number.isInteger(pid)).toBe(true);
+		expect(pid).toBeGreaterThan(0);
+		expect(() => process.kill(pid, 0)).not.toThrow();
+		expect(() => process.kill(pid, "SIGKILL")).not.toThrow();
+	});
+
+	it("times out commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const result = await executeBash("sleep 10", { cwd: tempDir, timeout: 50 });
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("timed out");
+	});
+
+	it("times out before follow-up output", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const result = await executeBash("sleep 10; echo done", { cwd: tempDir, timeout: 50 });
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("timed out");
+		expect(result.output).not.toContain("done");
+	});
+
+	it("aborts commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const controller = new AbortController();
+		const promise = executeBash("sleep 10", {
+			cwd: tempDir,
+			timeout: 5000,
+			signal: controller.signal,
+		});
+		await Bun.sleep(50);
+		controller.abort();
+		const result = await promise;
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("Command cancelled");
+	});
+
+	it("returns promptly and quarantines the session key when native abort cleanup stalls", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const originalRun = piNatives.Shell.prototype.run;
+		let runCalls = 0;
+		const dispatched = Promise.withResolvers<void>();
+		vi.spyOn(piNatives.Shell.prototype, "run").mockImplementation(function (this: Shell, options, onChunk) {
+			runCalls++;
+			if (runCalls === 1) {
+				onChunk?.(null, "started\n");
+				dispatched.resolve();
+				return new Promise(() => {});
+			}
+			return originalRun.call(this, options, onChunk);
+		});
+		const abortSpy = vi.spyOn(piNatives.Shell.prototype, "abort").mockResolvedValue();
+
+		const controller = new AbortController();
+		const promise = executeBash("sleep 10", {
+			cwd: tempDir,
+			timeout: 5000,
+			signal: controller.signal,
+			sessionKey: "hung-native-abort",
+		});
+		await dispatched.promise;
+		controller.abort();
+
+		const raced = await Promise.race([
+			promise.then(result => ({ type: "result" as const, result })),
+			Bun.sleep(750).then(() => ({ type: "timeout" as const })),
+		]);
+
+		expect(raced.type).toBe("result");
+		if (raced.type === "result") {
+			expect(raced.result.cancelled).toBe(true);
+			expect(raced.result.output).toContain("Command cancelled");
+		}
+		expect(abortSpy).toHaveBeenCalled();
+
+		const next = await executeBash("echo next", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey: "hung-native-abort",
+		});
+		expect(next.output.trim()).toBe("next");
+		expect(runCalls).toBe(1);
+	});
+
+	it("restores persistent sessions after native abort cleanup settles", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const nativeResult = Promise.withResolvers<{ exitCode: undefined; cancelled: true; timedOut: false }>();
+		const dispatched = Promise.withResolvers<void>();
+		vi.spyOn(piNatives.Shell.prototype, "run").mockImplementation((_options, onChunk) => {
+			onChunk?.(null, "started\n");
+			dispatched.resolve();
+			return nativeResult.promise;
+		});
+		vi.spyOn(piNatives.Shell.prototype, "abort").mockResolvedValue();
+
+		const controller = new AbortController();
+		const promise = executeBash("sleep 10", {
+			cwd: tempDir,
+			timeout: 5000,
+			signal: controller.signal,
+			sessionKey: "settled-native-abort",
+		});
+		await dispatched.promise;
+		controller.abort();
+		await promise;
+
+		nativeResult.resolve({ exitCode: undefined, cancelled: true, timedOut: false });
+		await Bun.sleep(0);
+		vi.restoreAllMocks();
+
+		await executeBash("export PI_AFTER_ABORT=still_persistent", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey: "settled-native-abort",
+		});
+		const next = await executeBash("printf '%s\n' \"$PI_AFTER_ABORT\"", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey: "settled-native-abort",
+		});
+		expect(next.output.trim()).toBe("still_persistent");
+	});
+
+	it("returns at the JavaScript timeout when native timeout cleanup stalls", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		vi.spyOn(piNatives.Shell.prototype, "run").mockImplementation((_options, onChunk) => {
+			onChunk?.(null, "started\n");
+			return new Promise(() => {});
+		});
+		const abortSpy = vi.spyOn(piNatives.Shell.prototype, "abort").mockResolvedValue();
+
+		const promise = executeBash("sleep 10", {
+			cwd: tempDir,
+			timeout: 1000,
+			sessionKey: "hung-native-timeout",
+		});
+		const raced = await Promise.race([
+			promise.then(result => ({ type: "result" as const, result })),
+			Bun.sleep(1500).then(() => ({ type: "timeout" as const })),
+		]);
+
+		expect(raced.type).toBe("result");
+		if (raced.type === "result") {
+			expect(raced.result.cancelled).toBe(true);
+			expect(raced.result.output).toContain("Command timed out after 1 seconds");
+		}
+		expect(abortSpy).toHaveBeenCalled();
+	});
+
+	it("aborts before follow-up output", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const controller = new AbortController();
+		const promise = executeBash("sleep 10; echo done", {
+			cwd: tempDir,
+			timeout: 5000,
+			signal: controller.signal,
+		});
+		await Bun.sleep(100);
+		controller.abort();
+		const result = await promise;
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("Command cancelled");
+		expect(result.output).not.toContain("done");
+	});
+
+	it("resets persistent session state after abort", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+
+		const sessionKey = "reset-on-abort";
+		await executeBash("export PI_RESET_VAR=alive", { cwd: tempDir, timeout: 5000, sessionKey });
+		const beforeAbort = await executeBash("echo $PI_RESET_VAR", { cwd: tempDir, timeout: 5000, sessionKey });
+		expect(beforeAbort.output.trim()).toBe("alive");
+
+		const controller = new AbortController();
+		// Abort only once the command is actually running in the persistent
+		// session. Aborting on a fixed timer races executeBash's async setup
+		// (settings + snapshot load); under load the abort can land in the
+		// early-abort short-circuit before the shell ever runs, leaving the
+		// session unreset — the source of the flaky "alive" result here.
+		const startMarker = path.join(tempDir, "reset-on-abort.started");
+		const abortPromise = executeBash(`touch ${startMarker}; sleep 10`, {
+			cwd: tempDir,
+			timeout: 5000,
+			signal: controller.signal,
+			sessionKey,
+		});
+		const startDeadline = Date.now() + 4000;
+		while (!fs.existsSync(startMarker) && Date.now() < startDeadline) {
+			await Bun.sleep(2);
+		}
+		controller.abort();
+		const aborted = await abortPromise;
+		expect(aborted.cancelled).toBe(true);
+
+		// biome-ignore lint/suspicious/noTemplateCurlyInString: this is a bash variable expansion
+		const afterAbort = await executeBash("echo ${PI_RESET_VAR:-unset}", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey,
+		});
+		expect(afterAbort.output.trim()).toBe("unset");
+	});
+
+	it("runs overlapping calls on the same session key concurrently", async () => {
+		if (process.platform === "win32") return;
+
+		const sessionKey = "parallel-overlap";
+		const order: string[] = [];
+		const slow = executeBash('sleep 0.6 && echo "A-done"', { cwd: tempDir, timeout: 5000, sessionKey }).then(
+			result => {
+				order.push("slow");
+				return result;
+			},
+		);
+		const fast = executeBash('echo "B-done"', { cwd: tempDir, timeout: 5000, sessionKey }).then(result => {
+			order.push("fast");
+			return result;
+		});
+
+		const [slowResult, fastResult] = await Promise.all([slow, fast]);
+		expect(slowResult.exitCode).toBe(0);
+		expect(slowResult.output).toContain("A-done");
+		expect(fastResult.exitCode).toBe(0);
+		expect(fastResult.output).toContain("B-done");
+		// If the second call had queued behind the persistent session it could
+		// not finish before the 600ms sleep of the first.
+		expect(order).toEqual(["fast", "slow"]);
+	});
+
+	it("keeps the owner session usable when an overlapping call times out", async () => {
+		if (process.platform === "win32") return;
+
+		const sessionKey = "parallel-timeout-isolation";
+		const owner = executeBash('sleep 1.3 && echo "owner-done"', {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey,
+		});
+		// Overlaps with the owner for its whole lifetime; times out at the 1s floor.
+		const overlapping = await executeBash("sleep 5", { cwd: tempDir, timeout: 1000, sessionKey });
+		expect(overlapping.cancelled).toBe(true);
+
+		const ownerResult = await owner;
+		expect(ownerResult.exitCode).toBe(0);
+		expect(ownerResult.output).toContain("owner-done");
+
+		// The overlapping timeout must not quarantine or delete the persistent
+		// session owned by the first call.
+		const after = await executeBash('echo "still-ok"', { cwd: tempDir, timeout: 5000, sessionKey });
+		expect(after.exitCode).toBe(0);
+		expect(after.output).toContain("still-ok");
+	});
+	it("streams output chunks", async () => {
+		const chunks: string[] = [];
+		const result = await executeBash("i=1; while [ $i -le 20 ]; do echo line$i; i=$((i+1)); done", {
+			cwd: tempDir,
+			timeout: 5000,
+			onChunk: chunk => {
+				expect(chunk.length).toBeGreaterThan(0);
+				chunks.push(chunk);
+			},
+		});
+		// At least one chunk should have been delivered to onChunk
+		expect(chunks.length).toBeGreaterThan(0);
+		const combined = chunks.join("");
+		expect(combined).toContain("line1");
+		// Final result always has the complete output regardless of chunk throttle
+		expect(result.output).toContain("line1");
+		expect(result.output).toContain("line20");
+	});
+
+	it("streams large output without exhausting memory", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		let sawChunk = false;
+		const result = await executeBash("awk 'BEGIN { for (i = 0; i < 100000; i++) printf \"a\" }'", {
+			cwd: tempDir,
+			timeout: 5000,
+			onChunk: () => {
+				sawChunk = true;
+			},
+		});
+		expect(sawChunk).toBe(true);
+		expect(result.totalBytes).toBe(100000);
+		expect(result.outputBytes).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
+		expect(result.output).toContain("a");
+	});
+
+	it("handles multi-million line output without freeze or OOM", async () => {
+		if (process.platform === "win32") return;
+
+		// 5 million lines ~= 40MB of output. Before the 64KB read buffer and
+		// direct-push fixes, this would freeze or OOM the process.
+		const lineCount = 5_000_000;
+		let chunkCount = 0;
+		const start = Date.now();
+		const result = await executeBash(`seq 1 ${lineCount}`, {
+			cwd: tempDir,
+			timeout: 30_000,
+			onChunk: () => {
+				chunkCount++;
+			},
+		});
+		const elapsed = Date.now() - start;
+
+		// Should complete, not hang or OOM
+		expect(result.exitCode).toBe(0);
+		expect(result.cancelled).toBe(false);
+
+		// Output summary should reflect all lines
+		expect(result.totalLines).toBeGreaterThanOrEqual(lineCount);
+
+		// Truncated output should be bounded by head + tail + marker overhead
+		// (middle-elision keeps the head budget plus the tail spill window).
+		expect(result.outputBytes).toBeLessThanOrEqual(DEFAULT_MAX_BYTES + ARTIFACT_HEAD_BYTES_DEFAULT + 1024);
+
+		// The tail should still contain numeric values near the end of the range.
+		// BSD `seq` on macOS formats large numbers in scientific notation, so parse
+		// the final lines numerically instead of matching one exact decimal string.
+		const tailValues = result.output
+			.split("\n")
+			.slice(-1000)
+			.map(line => Number(line.trim()))
+			.filter(Number.isFinite);
+		expect(tailValues.some(value => value >= lineCount - 500 && value <= lineCount)).toBe(true);
+
+		// With 64KB read buffer, ~40MB should produce ~600 chunks, not 5M.
+		// Allow generous headroom but ensure it's orders of magnitude below lineCount.
+		expect(chunkCount).toBeLessThan(lineCount / 100);
+
+		// Should complete in reasonable time (not frozen). On a modern machine
+		// seq 1 5000000 itself takes ~0.5s; with JS overhead allow 20s.
+		expect(elapsed).toBeLessThan(20_000);
+	}, 35_000);
+
+	it("sources snapshot env vars across session commands", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const bashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
+		if (!fs.existsSync(bashPath)) {
+			return;
+		}
+		const snapshotPath = path.join(tempDir, "snapshot.sh");
+		fs.writeFileSync(snapshotPath, "export PI_SNAPSHOT_TEST=from_snapshot\n");
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: bashPath,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: Bun.env.HOME ?? tempDir,
+			},
+			prefix: undefined,
+		});
+		vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(snapshotPath);
+		const sessionKey = "snapshot-test";
+		await executeBash("true", { cwd: tempDir, timeout: 5000, sessionKey });
+		const result = await executeBash("echo $PI_SNAPSHOT_TEST", { cwd: tempDir, timeout: 5000, sessionKey });
+		expect(result.output.trim()).toBe("from_snapshot");
+	});
+
+	it("sources large bash functions without base64 eval wrappers", async () => {
+		if (process.platform === "win32") {
+			return;
+		}
+		const realBashPath = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
+		if (!fs.existsSync(realBashPath)) {
+			return;
+		}
+
+		const bashPath = path.join(tempDir, "test-bash");
+		fs.symlinkSync(realBashPath, bashPath);
+		const largeBody = Array.from({ length: 200 }, (_, index) => `    echo "snapshot ${index}"`).join("\n");
+		fs.writeFileSync(path.join(tempDir, ".bashrc"), `pi_snapshot_large_function ()\n{\n${largeBody}\n}\n`);
+
+		vi.spyOn(os, "homedir").mockReturnValue(tempDir);
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: bashPath,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: tempDir,
+			},
+			prefix: undefined,
+		});
+
+		const snapshotPath = await shellSnapshot.getOrCreateSnapshot(bashPath, {
+			PATH: Bun.env.PATH ?? "",
+			HOME: tempDir,
+		});
+		expect(snapshotPath).not.toBeNull();
+		const snapshot = fs.readFileSync(snapshotPath!, "utf8");
+		expect(snapshot).toContain("pi_snapshot_large_function");
+		expect(snapshot).not.toContain("base64 -d");
+
+		const result = await executeBash("printf 'snapshot_ok\\n'", {
+			cwd: tempDir,
+			timeout: 5000,
+			sessionKey: "large-function-snapshot",
+		});
+		expect(result.cancelled).toBe(false);
+		expect(result.output.trim()).toBe("snapshot_ok");
+	});
+
+	it("does not allow exec to replace the host", async () => {
+		const result = await executeBash("exec echo hi", { cwd: tempDir, timeout: 5000 });
+		expect(result.cancelled).toBe(false);
+		expect(result.exitCode).not.toBeUndefined();
+		if (!result.output.includes("hi")) {
+			expect(result.output.toLowerCase()).toContain("exec");
+		}
+	});
+
+	it("completes even when background job keeps stdout pipe open", async () => {
+		if (process.platform === "win32") return;
+
+		const runPromise = executeBash("{ sleep 2; echo late; } & echo immediate", {
+			cwd: tempDir,
+			timeout: 5000,
+		});
+		const timed = await Promise.race([
+			runPromise.then(result => ({ type: "result" as const, result })),
+			Bun.sleep(BACKGROUND_COMPLETION_RACE_MS).then(() => ({ type: "timeout" as const })),
+		]);
+
+		expect(timed.type).toBe("result");
+		if (timed.type === "result") {
+			expect(timed.result.cancelled).toBe(false);
+			expect(timed.result.exitCode).toBe(0);
+			expect(timed.result.output).toContain("immediate");
+		}
+	});
+	it("kills spawned process on timeout (not just orphans it)", async () => {
+		if (process.platform === "win32") return;
+
+		const marker = path.join(tempDir, "marker.txt");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+
+		// Command creates marker after a short delay, but we timeout before then.
+		const start = Date.now();
+		const result = await executeBash(`sleep ${KILL_MARKER_DELAY_SECONDS} && echo done > '${markerEscaped}'`, {
+			cwd: tempDir,
+			timeout: 100,
+		});
+
+		expect(result.cancelled).toBe(true);
+
+		// Observe past the instant the marker would have been written had the
+		// process survived. If it was killed (not orphaned), it never appears.
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
+		expect(fs.existsSync(marker)).toBe(false);
+	});
+
+	it("kills background jobs on timeout", async () => {
+		if (process.platform === "win32") return;
+
+		const marker = path.join(tempDir, "marker-bg.txt");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+
+		const start = Date.now();
+		const result = await executeBash(
+			`{ sleep ${KILL_MARKER_DELAY_SECONDS}; echo done > '${markerEscaped}'; } & sleep 10`,
+			{
+				cwd: tempDir,
+				timeout: 100,
+			},
+		);
+
+		expect(result.cancelled).toBe(true);
+
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
+		expect(fs.existsSync(marker)).toBe(false);
+	});
+
+	it("kills background jobs on abort", async () => {
+		if (process.platform === "win32") return;
+
+		const marker = path.join(tempDir, "marker-bg-abort.txt");
+		const release = path.join(tempDir, "marker-bg-abort.release");
+		const started = path.join(tempDir, "marker-bg-abort.started");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const releaseEscaped = release.replace(/'/g, "'\\''");
+		const startedEscaped = started.replace(/'/g, "'\\''");
+		const controller = new AbortController();
+
+		const promise = executeBash(
+			`{ touch '${startedEscaped}'; while [ ! -f '${releaseEscaped}' ]; do sleep 0.05; done; echo done > '${markerEscaped}'; } & sleep 10`,
+			{
+				cwd: tempDir,
+				timeout: 10000,
+				signal: controller.signal,
+			},
+		);
+
+		const startDeadline = Date.now() + 4000;
+		while (!fs.existsSync(started) && Date.now() < startDeadline) {
+			await Bun.sleep(2);
+		}
+		expect(fs.existsSync(started)).toBe(true);
+		controller.abort();
+		const result = await promise;
+
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("Command cancelled");
+
+		// The backgrounded subshell only writes its marker once `release` exists.
+		// If abort failed to kill the process group, the orphan is still polling
+		// for `release` every 50ms — touching it makes a survivor react within one
+		// poll. A short settle first lets the kill signal propagate before we probe.
+		await Bun.sleep(100);
+		fs.writeFileSync(release, "");
+		await Bun.sleep(200);
+		expect(fs.existsSync(marker)).toBe(false);
+	});
+
+	it("kills spawned process on abort (not just orphans it)", async () => {
+		if (process.platform === "win32") return;
+
+		const marker = path.join(tempDir, "marker.txt");
+		const markerEscaped = marker.replace(/'/g, "'\\''");
+		const controller = new AbortController();
+
+		// Command creates marker after a short delay.
+		const start = Date.now();
+		const promise = executeBash(`sleep ${KILL_MARKER_DELAY_SECONDS} && echo done > '${markerEscaped}'`, {
+			cwd: tempDir,
+			timeout: 10000,
+			signal: controller.signal,
+		});
+
+		// Abort before the command can create the marker.
+		await Bun.sleep(100);
+		controller.abort();
+		const result = await promise;
+
+		expect(result.cancelled).toBe(true);
+		expect(result.output).toContain("Command cancelled");
+
+		// Observe past the instant the marker would have been written had the
+		// process survived. If it was killed (not orphaned), it never appears.
+		await waitUntil(start + KILL_MARKER_DELAY_MS + KILL_MARKER_OBSERVE_MARGIN_MS);
+		expect(fs.existsSync(marker)).toBe(false);
+	});
+});
