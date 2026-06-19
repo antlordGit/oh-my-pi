@@ -1,0 +1,58 @@
+version: "3.9"
+
+services:
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: omp
+      MYSQL_USER: omp
+      MYSQL_PASSWORD: ${OMP_DB_PASSWORD:-omp}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../deploy/Dockerfile.backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      OMP_DB_URL: jdbc:mysql://mysql:3306/omp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=UTC&allowPublicKeyRetrieval=true
+      OMP_DB_USER: omp
+      OMP_DB_PASSWORD: ${OMP_DB_PASSWORD:-omp}
+      OMP_BIN: /usr/local/bin/omp
+      OMP_WORKSPACES_ROOT: /srv/omp/workspaces
+      OMP_AGENT_ROOT: /srv/omp/agent
+      OMP_STDERR_LOG_DIR: /srv/omp/logs
+      OMP_API_KEY: ${OMP_API_KEY}
+      OMP_JWT_SECRET: ${OMP_JWT_SECRET:-please-change-this-secret-at-least-32-chars-long}
+      OMP_BOOTSTRAP_ADMIN_USERNAME: ${OMP_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      OMP_BOOTSTRAP_ADMIN_PASSWORD: ${OMP_BOOTSTRAP_ADMIN_PASSWORD:-admin}
+    volumes:
+      - omp-data:/srv/omp
+    ports:
+      - "8080:8080"
+
+  web:
+    build:
+      context: ../web
+      dockerfile: ../deploy/Dockerfile.web
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  mysql-data:
+  omp-data:

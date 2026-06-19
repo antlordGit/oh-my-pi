@@ -1,0 +1,30 @@
+package com.yourorg.omp.security;
+
+import com.yourorg.omp.entity.User;
+import com.yourorg.omp.repo.UserRepository;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
+@Component
+public class CurrentUser {
+
+    private final UserRepository users;
+
+    public CurrentUser(UserRepository users) {
+        this.users = users;
+    }
+
+    public User require() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getName() == null) {
+            throw new IllegalStateException("No authenticated user in context");
+        }
+        return users.findByUsername(auth.getName())
+                .orElseThrow(() -> new IllegalStateException("Authenticated user not found: " + auth.getName()));
+    }
+
+    public Long requireId() {
+        return require().getId();
+    }
+}

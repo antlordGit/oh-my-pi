@@ -1,0 +1,334 @@
+/* =====================================================================
+   OMP design system — Editorial Light
+   Premium magazine + coding tool. Warm white, deep ink, vivid coral.
+   High contrast, generous space, bold typographic energy.
+   ===================================================================== */
+
+:root {
+  /* --- surface hierarchy (light) --- */
+  --bg-base:       #faf7f2;    /* warm white page */
+  --bg-raised:     #ffffff;    /* pure white cards */
+  --bg-sunken:     #f3efe8;    /* recessed / code blocks */
+  --bg-hover:      #f5f2ec;    /* subtle hover */
+  --border:        #e5e0d8;    /* default border */
+  --border-strong: #d4cec4;    /* pronounced border */
+
+  /* --- text spectrum --- */
+  --text:          #1a1c1e;    /* primary — deep ink */
+  --text-secondary:#4e5256;    /* secondary */
+  --text-muted:    #8b8f94;    /* muted / helper */
+  --text-faint:    #b8bcc0;    /* disabled / placeholder */
+  --text-invert:   #faf7f2;    /* on dark backgrounds */
+
+  /* --- accent: vivid coral (inject energy) --- */
+  --accent:        #e04e3c;    /* ▸ coral red */
+  --accent-glow:   #f06b5a;    /* hover */
+  --accent-deep:   #b83a2c;    /* pressed */
+  --accent-soft:   rgba(224, 78, 60, 0.08);
+  --accent-medium: rgba(224, 78, 60, 0.15);
+  --accent-strong: rgba(224, 78, 60, 0.25);
+
+  /* --- semantic --- */
+  --good:          #2d8a5e;    /* forest green */
+  --good-soft:     rgba(45, 138, 94, 0.08);
+  --warn:          #d4851e;    /* amber */
+  --warn-soft:     rgba(212, 133, 30, 0.08);
+  --danger:        #d14343;    /* red */
+  --danger-soft:   rgba(209, 67, 67, 0.08);
+
+  /* --- shadows (light-mode depth) --- */
+  --shadow-card:   0 1px 3px rgba(0, 0, 0, 0.04),
+                   0 8px 32px rgba(0, 0, 0, 0.06);
+  --shadow-float:  0 4px 6px rgba(0, 0, 0, 0.06),
+                   0 16px 56px rgba(0, 0, 0, 0.10);
+  --shadow-glow:   0 0 0 3px rgba(224, 78, 60, 0.2),
+                   0 0 32px rgba(224, 78, 60, 0.1);
+
+  /* --- typography --- */
+  --font-display: "Fraunces", "Iowan Old Style", "Apple Garamond", Georgia, serif;
+  --font-ui:      "DM Sans", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-mono:    "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* --- geometry --- */
+  --grid:   8px;
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-xs: 4px;
+
+  /* --- backwards compat aliases --- */
+  --fg:         var(--text);
+  --fg-mute:    var(--text-secondary);
+  --fg-dim:     var(--text-muted);
+  --fg-faint:   var(--text-faint);
+  --bg:         var(--bg-base);
+  --bg-soft:    var(--bg-sunken);
+  --line-soft:  var(--border);
+  --line:       var(--border-strong);
+  --line-bold:  var(--text-muted);
+}
+
+/* =====================================================================
+   Reset & base
+   ===================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; min-height: 100vh; }
+
+body {
+  background: var(--bg-base);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+::selection { background: var(--accent); color: var(--text-invert); }
+
+/* =====================================================================
+   Typography
+   ===================================================================== */
+
+.serif {
+  font-family: var(--font-display);
+  font-weight: 400;
+  letter-spacing: -0.012em;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  letter-spacing: 0;
+}
+
+h1, h2, h3, h4 { font-family: var(--font-display); font-weight: 400; margin: 0; }
+
+/* =====================================================================
+   Structure
+   ===================================================================== */
+
+.rule {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 0;
+}
+
+.serial {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* =====================================================================
+   Buttons (naive-ui overrides)
+   ===================================================================== */
+
+button.n-button {
+  font-family: var(--font-mono) !important;
+  font-weight: 500 !important;
+  border-radius: var(--radius-xs) !important;
+  transition: all 160ms ease;
+}
+button.n-button.n-button--primary-type {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff !important;
+}
+button.n-button.n-button--primary-type:hover {
+  background: var(--accent-glow) !important;
+}
+
+/* =====================================================================
+   Cards (naive-ui overrides)
+   ===================================================================== */
+
+.n-card {
+  background: var(--bg-raised) !important;
+  border-radius: var(--radius) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+
+/* =====================================================================
+   Inputs (naive-ui overrides)
+   ===================================================================== */
+
+.n-input__border,
+.n-base-selection__border {
+  border-color: var(--border) !important;
+}
+.n-input--focus .n-input__state-border {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--accent-soft) !important;
+}
+.n-input__input-el {
+  color: var(--text) !important;
+  caret-color: var(--accent) !important;
+}
+
+/* =====================================================================
+   Misc
+   ===================================================================== */
+
+a { color: var(--accent); text-decoration: none; }
+
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* =====================================================================
+   Animations
+   ===================================================================== */
+
+@keyframes fade-up {
+  0%   { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+.fade-up {
+  animation: fade-up 500ms cubic-bezier(0.2, 0.6, 0.2, 1) both;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(224, 78, 60, 0.3); }
+  50%      { box-shadow: 0 0 0 8px rgba(224, 78, 60, 0); }
+}
+
+.cursor-blink {
+  display: inline-block;
+  width: 0.5em;
+  height: 1.1em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 2px;
+  border-radius: 2px;
+  animation: blink 1.1s steps(2, start) infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 0.2; }
+  50%      { opacity: 1; }
+}
+
+/* =====================================================================
+   Shared utility classes
+   ===================================================================== */
+
+/* Surface card */
+.surface {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+.surface:hover {
+  box-shadow: var(--shadow-float);
+}
+
+/* Field — raw input */
+.field-raw {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 10px 14px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--text);
+  caret-color: var(--accent);
+  outline: 0;
+  width: 100%;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+.field-raw::placeholder { color: var(--text-faint); }
+.field-raw:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* Ghost button */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.btn-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Primary button */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: all 160ms ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-glow);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 20px rgba(224, 78, 60, 0.3);
+}
+.btn-primary:disabled {
+  background: var(--border);
+  color: var(--text-faint);
+  cursor: not-allowed;
+}
+
+/* Mini danger button */
+.btn-mini-danger {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 140ms ease;
+}
+.btn-mini-danger:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+/* Dotline fill */
+.dotline-fill {
+  flex: 1;
+  height: 1px;
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--border) 0, var(--border) 2px,
+    transparent 2px, transparent 6px
+  );
+}

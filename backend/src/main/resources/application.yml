@@ -1,0 +1,43 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:prod}
+  application:
+    name: omp-backend
+
+# Application config — see OmpProperties
+app:
+  omp:
+    binary: ${OMP_BIN:/Users/chenzhiwei/bin/omp}
+    workspaces-root: ${OMP_WORKSPACES_ROOT:/tmp/omp/workspaces}
+    agent-root: ${OMP_AGENT_ROOT:/tmp/omp/agent}
+    stderr-log-dir: ${OMP_STDERR_LOG_DIR:/tmp/omp/logs}
+    pool:
+      max-concurrent: 10
+      idle-ttl-minutes: 30
+    per-user-session-limit: 100
+    default-flags:
+      tools: read,edit,write,bash,grep,find,ls
+      thinking: medium
+      approval-mode: yolo
+      no-tui: true
+    default-model:
+      provider: anthropic
+      model-id: claude-sonnet-4-5
+  security:
+    jwt-secret: ${OMP_JWT_SECRET:local-dev-secret-please-change-32chars-or-more-yes}
+    jwt-ttl-hours: 24
+    bootstrap-admin:
+      username: ${OMP_BOOTSTRAP_ADMIN_USERNAME:admin}
+      password: ${OMP_BOOTSTRAP_ADMIN_PASSWORD:admin}
+  vault:
+    api-key: ${OMP_API_KEY:}
+
+logging:
+  level:
+    com.yourorg.omp: INFO
+    com.yourorg.omp.rpc.OmpRpcClient: INFO     # ★ 改 DEBUG 可以看 text_delta 增量字符
+    org.springframework.web.socket: INFO
