@@ -94,6 +94,11 @@ public class SessionController {
                 sessionId, req.message() == null ? 0 : req.message().length(), req.streamingBehavior());
         SessionMeta m = require(sessionId);
         log.info("[prompt] session={} meta ok status={}", sessionId, m.getStatus());
+        // Archived sessions auto-promote to active when a new prompt is sent.
+        if ("archived".equals(m.getStatus())) {
+            sessions.unarchive(sessionId);
+            m.setStatus("active");
+        }
         // Audit the prompt itself (audit-pipeline picks up streamed response events).
         audit.recordPrompt(sessionId, m.getUserId(), req.message(), null);
         // Fire-and-forget: the response comes over WS, not this REST call.
@@ -135,9 +140,13 @@ public class SessionController {
     }
 
     @PostMapping("/{sessionId}/branch")
-    public JsonNode branch(@PathVariable String sessionId, @RequestBody BranchRequest req) throws Exception {
+    public Map<String, Object> branch(@PathVariable String sessionId, @RequestBody BranchRequest req) throws Exception {
         SessionMeta m = require(sessionId);
-        return sessions.sendCommand(m, RpcCommands.branch(req.entryId())).get();
+        // branch is fire-and-forget: omp emits session_info_update asynchronously
+        // with the new sessionFile once the fork is complete. The frontend watches
+        // the WS stream and refreshes its view when session_info_update arrives.
+        sessions.sendCommand(m, RpcCommands.branch(req.entryId()));
+        return Map.of("ok", true, "entryId", req.entryId());
     }
 
     @PostMapping("/{sessionId}/new-session")
@@ -162,6 +171,17 @@ public class SessionController {
     public Map<String, Object> archive(@PathVariable String sessionId) {
         SessionMeta m = require(sessionId);
         sessions.archive(sessionId);
+        return Map.of("ok", true);
+    }
+
+    @PostMapping("/{sessionId}/unarchive")
+    public Map<String, Object> unarchive(@PathVariable String sessionId) {
+        SessionMeta m = require(sessionId);
+        long active = sessions.countActiveByUser(m.getUserId());
+        if (active >= props.perUserSessionLimit()) {
+            throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
+        }
+        sessions.unarchive(sessionId);
         return Map.of("ok", true);
     }
 

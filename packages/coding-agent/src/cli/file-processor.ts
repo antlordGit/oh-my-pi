@@ -6,7 +6,7 @@ import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { getProjectDir, isEnoent, readImageMetadata } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
-import { resolveReadPath } from "../tools/path-utils";
+import { assertWithinCwd, resolveReadPath } from "../tools/path-utils";
 import { formatBytes } from "../tools/render-utils";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { convertFileWithMarkit } from "../utils/markit";
@@ -25,17 +25,21 @@ export interface ProcessedFiles {
 export interface ProcessFileOptions {
 	/** Whether to auto-resize images to 2000x2000 max. Default: true */
 	autoResizeImages?: boolean;
+	/** CWD for path resolution and sandbox check. Defaults to project root. */
+	cwd?: string;
 }
 
 /** Process @file arguments into text, document content, and image attachments */
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
+	const cwd = options?.cwd ?? getProjectDir();
 	let text = "";
 	const images: ImageContent[] = [];
 
 	for (const fileArg of fileArgs) {
 		// Expand and resolve path (handles ~ expansion and macOS screenshot Unicode spaces)
-		const absolutePath = path.resolve(resolveReadPath(fileArg, getProjectDir()));
+		const absolutePath = path.resolve(resolveReadPath(fileArg, cwd));
+		assertWithinCwd(absolutePath, cwd, "cli @file");
 
 		const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
 		if (!stat) {

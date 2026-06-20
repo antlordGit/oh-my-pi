@@ -214,13 +214,13 @@ public class AuditService {
 
     private void onSessionInfoUpdate(String sessionId, JsonNode frame) {
         String title = frame.path("title").asText(null);
-        if (title != null) {
-            sessionRepo.findBySessionId(sessionId).ifPresent(m -> {
-                m.setTitle(title);
-                m.setLastActiveAt(Instant.now());
-                sessionRepo.save(m);
-            });
-        }
+        String sessionFile = frame.path("sessionFile").asText(null);
+        sessionRepo.findBySessionId(sessionId).ifPresent(m -> {
+            if (title != null) m.setTitle(title);
+            if (sessionFile != null && !sessionFile.isBlank()) m.setOmpSessionFile(sessionFile);
+            m.setLastActiveAt(Instant.now());
+            sessionRepo.save(m);
+        });
     }
 
     // -------- public write APIs (called from REST when user sends a prompt) --------

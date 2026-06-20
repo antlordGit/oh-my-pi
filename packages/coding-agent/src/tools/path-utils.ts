@@ -367,6 +367,68 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return path.resolve(cwd, expanded);
 }
 
+/**
+ * True when `child` is the same path as `parent` or lives strictly inside it.
+ *
+ * Uses `path.relative` so prefix traps are avoided (`/data/project-other` is
+ * not considered inside `/data/project`). Both inputs are normalized through
+ * `path.resolve` first so trailing separators and `.`/`..` segments do not
+ * confuse the comparison.
+ */
+export function isPathInside(child: string, parent: string): boolean {
+	const absChild = path.resolve(child);
+	const absParent = path.resolve(parent);
+	if (absChild === absParent) return true;
+	const rel = path.relative(absParent, absChild);
+	return rel !== "" && !rel.startsWith(`..${path.sep}`) && rel !== ".." && !path.isAbsolute(rel);
+}
+
+/**
+ * Assert that `resolvedPath` lives inside `cwd`.
+ *
+ * Throws a `ToolError` (consistent with the rest of the tool layer) when the
+ * target is outside the workspace. The check intentionally allows:
+ *  - the cwd itself (`rel === ""`),
+ *  - any direct or nested descendant of cwd,
+ *  - any path under one of `extraRoots` (e.g. the session-local `local://`
+ *    artifact sandbox, the `vault://` root) so internal-URL-backed files
+ *    remain reachable even though they live outside cwd,
+ *  - paths whose realpath equals cwd or any extra root, so symlink-based
+ *    mount points (macOS `/tmp` ↔ `/private/tmp`, `/var` ↔ `/private/var`)
+ *    do not produce false positives.
+ */
+export function assertWithinCwd(resolvedPath: string, cwd: string, context: string, extraRoots?: string[]): void {
+	if (isPathInside(resolvedPath, cwd)) return;
+	for (const root of extraRoots ?? []) {
+		if (isPathInside(resolvedPath, root)) return;
+	}
+	const absCwd = path.resolve(cwd);
+	const absPath = path.resolve(resolvedPath);
+	// Realpath-compare against cwd / extra roots to absorb macOS-style
+	// symlinked prefixes (`/tmp` vs `/private/tmp`).
+	try {
+		const realFs = fs.realpathSync.native;
+		const realAbsPath = realFs(absPath);
+		// Realpath cwd too — `/var/folders/...` resolves to `/private/var/folders/...`.
+		let realCwd = absCwd;
+		try {
+			realCwd = realFs(absCwd);
+		} catch {
+			// cwd may not exist (test scratch dirs get cleaned up); keep the unresolved form.
+		}
+		if (isPathInside(realAbsPath, realCwd)) return;
+		for (const root of extraRoots ?? []) {
+			if (isPathInside(realAbsPath, path.resolve(root))) return;
+		}
+	} catch {
+		// Path doesn't exist yet; fall through to the regular error.
+	}
+	throw new ToolError(
+		`Access denied: ${context} path '${absPath}' is outside workspace '${absCwd}'. ` +
+			`Supply a path inside the workspace, or use an internal URL (e.g. local://, vault://) for scratch space.`,
+	);
+}
+
 export function formatPathRelativeToCwd(
 	filePath: string,
 	cwd: string,
@@ -380,7 +442,7 @@ export function formatPathRelativeToCwd(
 	const expanded = expandPath(normalized);
 	const resolvedPath = path.isAbsolute(expanded) ? path.resolve(expanded) : path.resolve(cwd, expanded);
 	const relative = path.relative(resolvedCwd, resolvedPath);
-	const isWithinCwd = relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+	const isWithinCwd = isPathInside(resolvedPath, resolvedCwd);
 	let displayPath = normalizePosixPath(isWithinCwd ? relative || "." : resolvedPath);
 	if (options.trailingSlash && displayPath !== "." && !displayPath.endsWith("/")) {
 		displayPath += "/";
@@ -955,6 +1017,9 @@ export interface ToolScopeOptions {
 	signal?: AbortSignal;
 	/** Calling session's `local://` root mapping — pins resolutions to the calling session. */
 	localProtocolOptions?: LocalProtocolOptions;
+	/** Roots the workspace-boundary guard should treat as inside the workspace.
+	 *  Typically the resolved `local://` sandbox directory for the session. */
+	extraRoots?: string[];
 }
 
 export interface ToolScopeResolution {
@@ -1040,6 +1105,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 	if (effectivePaths.length === 1) {
 		const parsedPath = await parseSearchPathPreferringLiteral(effectivePaths[0] ?? ".", cwd);
 		searchPath = resolveToCwd(parsedPath.basePath, cwd);
+		assertWithinCwd(searchPath, cwd, opts.internalUrlAction, opts.extraRoots);
 		globFilter = parsedPath.glob;
 		scopePath = formatPathRelativeToCwd(searchPath, cwd);
 	} else {
@@ -1053,7 +1119,13 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 			throw new ToolError("`paths` must contain at least one path or glob");
 		}
 		searchPath = multiSearchPath.basePath;
+		assertWithinCwd(searchPath, cwd, opts.internalUrlAction, opts.extraRoots);
 		multiTargets = multiSearchPath.targets;
+		if (multiTargets) {
+			for (const target of multiTargets) {
+				assertWithinCwd(target.basePath, cwd, opts.internalUrlAction, opts.extraRoots);
+			}
+		}
 		if (opts.surfaceExactFilePaths) {
 			exactFilePaths = multiSearchPath.exactFilePaths;
 			globFilter = exactFilePaths || multiTargets ? undefined : multiSearchPath.glob;

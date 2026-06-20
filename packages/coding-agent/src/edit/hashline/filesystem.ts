@@ -22,7 +22,7 @@ import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredH
 import type { ToolSession } from "../../tools";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { enforceCwdWriteBoundary, enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
@@ -103,6 +103,7 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	async preflightWrite(relativePath: string): Promise<void> {
+		enforceCwdWriteBoundary(this.session, relativePath, "edit");
 		enforcePlanModeWrite(this.session, relativePath, { op: "update" });
 	}
 

@@ -10,7 +10,7 @@ import type { WritethroughCallback, WritethroughDeferredHandle } from "../../lsp
 import type { ToolSession } from "../../tools";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { enforceCwdWriteBoundary, enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { generateDiffString, replaceText } from "../diff";
 import {
 	countLeadingWhitespace,
@@ -1056,6 +1056,7 @@ export async function executeReplaceSingle(
 	} = options;
 	const { old_text, new_text, all } = params;
 
+	enforceCwdWriteBoundary(session, path, "edit replace");
 	enforcePlanModeWrite(session, path);
 
 	if (old_text.length === 0) {

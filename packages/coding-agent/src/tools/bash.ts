@@ -30,7 +30,7 @@ import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
-import { resolveToCwd } from "./path-utils";
+import { assertWithinCwd, resolveToCwd } from "./path-utils";
 import { capPreviewLines, formatToolWorkingDirectory, previewWindowRows, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -754,6 +754,7 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		invalidateGithubCacheForBashCommand(command);
 
 		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
+		assertWithinCwd(commandCwd, this.session.cwd, "bash cwd");
 		let cwdStat: fs.Stats;
 		try {
 			cwdStat = await fs.promises.stat(commandCwd);

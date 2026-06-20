@@ -3,7 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage } from 'naive-ui'
-import { listSessions, createSession, archive, type SessionSummary } from '@/api/session'
+import { listSessions, createSession, archive, unarchive, type SessionSummary } from '@/api/session'
 import { listRepos, createRepo, type Repo } from '@/api/repo'
 
 const router = useRouter()
@@ -13,6 +13,7 @@ const msg = useMessage()
 const sessions = ref<SessionSummary[]>([])
 const repos = ref<Repo[]>([])
 const loading = ref(false)
+const filter = ref<'all' | 'active' | 'archived'>('all')
 
 const newRepoId = ref('')
 const newRepoName = ref('')
@@ -20,8 +21,13 @@ const newSessionRepo = ref<string>('')
 const newSessionTitle = ref('')
 const showCreator = ref(false)
 
+const filteredSessions = computed(() =>
+  filter.value === 'all' ? sessions.value : sessions.value.filter(s => s.status === filter.value),
+)
+
 const activeCount = computed(() => sessions.value.filter(s => s.status === 'active').length)
 const archivedCount = computed(() => sessions.value.filter(s => s.status === 'archived').length)
+const totalSessions = computed(() => sessions.value.length)
 
 async function refresh() {
   loading.value = true
@@ -57,6 +63,11 @@ async function onArchive(id: string) {
   catch (e: any) { msg.error(e?.response?.data?.error || '归档失败') }
 }
 
+async function onUnarchive(id: string) {
+  try { await unarchive(id); msg.success('已恢复'); await refresh() }
+  catch (e: any) { msg.error(e?.response?.data?.error || '恢复失败') }
+}
+
 function fmtDate(s?: string) {
   if (!s) return '—'
   const d = new Date(s)
@@ -69,104 +80,156 @@ onMounted(refresh)
 
 <template>
   <div class="page">
-    <!-- Masthead -->
-    <header class="masthead fade-up">
-      <div class="masthead-row">
-        <div class="brand">
-          <span class="brand-mark">OMP</span>
-          <span class="brand-sub serif">Studio</span>
-        </div>
-        <div class="masthead-actions">
-          <span class="serial">{{ auth.username }}</span>
-          <span v-if="auth.isAdmin" class="admin-badge">管理员</span>
-          <button v-if="auth.isAdmin" class="lnk" @click="router.push('/admin')">控制室</button>
-          <button class="lnk" @click="logout">登出</button>
-        </div>
+    <!-- Topbar (Volcengine split nav) -->
+    <header class="topbar fade-up">
+      <div class="brand">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
+            <path d="M4 20 L12 4 L20 20 L16 20 L12 12 L8 20 Z" fill="#165DFF"/>
+          </svg>
+        </span>
+        <span class="brand-name">OMP</span>
       </div>
-      <h1 class="title serif">
-        会话列表
-        <em>.</em>
-      </h1>
+
+      <nav class="nav-links">
+        <a class="nav-link active">工作台</a>
+        <a class="nav-link">模型</a>
+        <a class="nav-link">解决方案</a>
+        <a class="nav-link">定价</a>
+        <a class="nav-link">文档</a>
+      </nav>
+
+      <div class="nav-search">
+        <span class="search-icon">⌕</span>
+        <input class="search-input" placeholder="搜索会话、仓库" />
+      </div>
+
+      <div class="nav-actions">
+        <span class="nav-user">
+          <span class="serial">{{ auth.username }}</span>
+          <span v-if="auth.isAdmin" class="tag" style="margin-left:8px">管理员</span>
+        </span>
+        <button v-if="auth.isAdmin" class="btn-ghost" @click="router.push('/admin')">控制室</button>
+        <button class="btn-ghost" @click="logout">登出</button>
+        <button class="btn-primary" @click="showCreator = !showCreator">
+          {{ showCreator ? '收起' : '新建会话' }}
+        </button>
+      </div>
     </header>
 
-    <!-- Stats bar -->
-    <div class="stats-bar fade-up" style="animation-delay:80ms">
-      <div class="stat">
-        <span class="stat-num serif">{{ String(activeCount).padStart(2, '0') }}</span>
-        <span class="stat-label serial">活跃</span>
+    <!-- Hero stats -->
+    <section class="hero-stats-section fade-up" style="animation-delay:160ms">
+      <div class="hero-stats">
+        <div class="stat-cell">
+          <span class="serial">活跃</span>
+          <span class="big-num">{{ String(activeCount).padStart(2, '0') }}</span>
+        </div>
+        <div class="stat-cell">
+          <span class="serial">归档</span>
+          <span class="big-num">{{ String(archivedCount).padStart(2, '0') }}</span>
+        </div>
+        <div class="stat-cell">
+          <span class="serial">仓库</span>
+          <span class="big-num">{{ String(repos.length).padStart(2, '0') }}</span>
+        </div>
+        <div class="stat-cell">
+          <span class="serial">总数</span>
+          <span class="big-num">{{ String(totalSessions).padStart(2, '0') }}</span>
+        </div>
       </div>
-      <div class="stat-div"></div>
-      <div class="stat">
-        <span class="stat-num serif">{{ String(archivedCount).padStart(2, '0') }}</span>
-        <span class="stat-label serial">已归档</span>
-      </div>
-      <div class="stat-div"></div>
-      <div class="stat">
-        <span class="stat-num serif">{{ String(repos.length).padStart(2, '0') }}</span>
-        <span class="stat-label serial">仓库</span>
-      </div>
-      <div class="stat-spacer"></div>
-      <button class="btn-primary" @click="showCreator = !showCreator">
-        {{ showCreator ? '收起' : '+ 新建会话' }}
+    </section>
+
+    <!-- Filter strip -->
+    <div class="filter-strip fade-up" style="animation-delay:280ms">
+      <button
+        v-for="f in ['all', 'active', 'archived'] as const"
+        :key="f"
+        class="filter-pill"
+        :class="{ on: filter === f }"
+        @click="filter = f"
+      >
+        <span class="filter-dot" :class="f"></span>
+        <span>{{ f === 'all' ? '全部' : f === 'active' ? '活跃' : '归档' }}</span>
+        <span class="filter-count">{{ f === 'all' ? totalSessions : f === 'active' ? activeCount : archivedCount }}</span>
       </button>
+      <span class="dotline-fill"></span>
+      <span class="serial">{{ filteredSessions.length }} 项</span>
     </div>
 
-    <!-- Creator panel -->
-    <transition name="slide">
-      <div v-if="showCreator" class="creator">
+    <!-- Creator -->
+    <transition name="slide-down">
+      <section v-if="showCreator" class="creator card">
         <div class="creator-grid">
-          <div class="surface" style="padding:28px">
-            <div class="creator-label serial">01 · 登记仓库</div>
-            <input v-model="newRepoId" class="field-raw" placeholder="仓库标识（英文/数字）" style="margin-top:12px" />
-            <input v-model="newRepoName" class="field-raw" placeholder="显示名（可选）" style="margin-top:8px" />
-            <button class="btn-ghost" :disabled="!newRepoId" @click="onCreateRepo" style="margin-top:12px">登记</button>
+          <div class="creator-card">
+            <span class="tag">01 · 登记仓库</span>
+            <h3 class="creator-title">登记一个<br /><strong>新仓库</strong></h3>
+            <input v-model="newRepoId" class="field-raw" placeholder="仓库标识（英文/数字）" />
+            <input v-model="newRepoName" class="field-raw" placeholder="显示名（可选）" />
+            <button class="btn-outline" :disabled="!newRepoId" @click="onCreateRepo">登记</button>
           </div>
-          <div class="surface" style="padding:28px">
-            <div class="creator-label serial">02 · 开启会话</div>
-            <select v-model="newSessionRepo" class="field-raw sel" style="margin-top:12px">
+          <div class="creator-card">
+            <span class="tag green">02 · 开启会话</span>
+            <h3 class="creator-title">在既有仓库<br /><strong>开始</strong></h3>
+            <select v-model="newSessionRepo" class="field-raw">
               <option v-if="!repos.length" disabled value="">暂无仓库</option>
               <option v-for="r in repos" :key="r.repoId" :value="r.repoId">{{ r.displayName }} · {{ r.repoId }}</option>
             </select>
-            <input v-model="newSessionTitle" class="field-raw" placeholder="会话标题（可选）" style="margin-top:8px" />
-            <button class="btn-primary" style="width:100%;margin-top:12px" :disabled="!newSessionRepo" @click="onCreateSession">进入 →</button>
+            <input v-model="newSessionTitle" class="field-raw" placeholder="会话标题（可选）" />
+            <button class="btn-primary" :disabled="!newSessionRepo" @click="onCreateSession">
+              进入工作室
+            </button>
           </div>
         </div>
-      </div>
+      </section>
     </transition>
 
     <!-- Session list -->
-    <section class="ledger fade-up" style="animation-delay:120ms">
-      <div v-if="!sessions.length" class="empty">
+    <section class="ledger fade-up" style="animation-delay:340ms">
+      <div v-if="!filteredSessions.length" class="empty card">
         <span class="empty-icon">—</span>
-        <p>暂无会话记录，点击上方「新建会话」开始。</p>
+        <p class="empty-text">暂无会话</p>
+        <span class="serial">点击右上「新建会话」开始第一次编码</span>
       </div>
 
       <div v-else class="entries">
         <article
-          v-for="(s, idx) in sessions"
+          v-for="(s, idx) in filteredSessions"
           :key="s.sessionId"
-          class="entry surface"
-          :class="{ archived: s.status === 'archived' }"
-          :style="{ animationDelay: 120 + idx * 35 + 'ms' }"
+          class="entry card"
+          :style="{ animationDelay: 340 + idx * 60 + 'ms' }"
           @click="router.push('/sessions/' + s.sessionId)"
         >
-          <span class="entry-num serif">{{ String(idx + 1).padStart(2, '0') }}</span>
+          <div class="entry-l">
+            <span class="entry-num">{{ String(idx + 1).padStart(2, '0') }}</span>
+            <span class="status-tag" :class="s.status">
+              <span class="status-dot"></span>
+              {{ s.status === 'active' ? '活跃' : '归档' }}
+            </span>
+          </div>
           <div class="entry-body">
-            <div class="entry-top">
-              <h3 class="entry-title serif">{{ s.title || '未命名会话' }}</h3>
-              <code class="entry-id mono">{{ s.sessionId.slice(0, 8) }}</code>
-            </div>
+            <h3 class="entry-title">{{ s.title || '未命名会话' }}</h3>
             <div class="entry-meta">
-              <span class="meta">仓库 · <code class="mono">{{ s.repoId }}</code></span>
-              <span class="meta">更新 · {{ fmtDate(s.lastActiveAt) }}</span>
-              <span class="meta" :class="{ active: s.status === 'active' }">
-                {{ s.status === 'active' ? '活跃' : '已归档' }}
+              <span class="meta">
+                <span class="serial">仓库</span>
+                <code class="mono">{{ s.repoId }}</code>
+              </span>
+              <span class="meta">
+                <span class="serial">ID</span>
+                <code class="mono">{{ s.sessionId.slice(0, 8) }}</code>
+              </span>
+              <span class="meta">
+                <span class="serial">更新</span>
+                <span class="mono">{{ fmtDate(s.lastActiveAt) }}</span>
               </span>
             </div>
           </div>
           <div class="entry-act" @click.stop>
-            <button class="btn-ghost" style="padding:6px 12px;font-size:10px" @click="router.push('/sessions/' + s.sessionId)">打开 →</button>
+            <button class="btn-ghost" @click="router.push('/sessions/' + s.sessionId)">
+              <span>打开</span>
+              <span class="caret">→</span>
+            </button>
             <button v-if="s.status === 'active'" class="btn-mini-danger" @click="onArchive(s.sessionId)">归档</button>
+            <button v-else class="btn-mini-danger" @click="onUnarchive(s.sessionId)">恢复</button>
           </div>
         </article>
       </div>
@@ -176,204 +239,275 @@ onMounted(refresh)
 
 <style scoped>
 .page {
-  max-width: 880px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 48px 40px 80px;
+  padding: 0 32px 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
 }
 
-/* Masthead */
-.masthead { margin-bottom: 28px; }
-.masthead-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-.brand {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-.brand-mark {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 13px;
-  letter-spacing: 0.3em;
-  background: var(--accent);
-  color: #fff;
-  padding: 4px 12px;
-  border-radius: 6px;
-}
-.brand-sub {
-  font-size: 26px;
-  font-weight: 300;
-  font-style: italic;
-  color: var(--text);
-}
-.masthead-actions {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-.admin-badge {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  background: var(--accent-soft);
-  color: var(--accent);
-  padding: 3px 10px;
-  border-radius: 6px;
-  font-weight: 600;
-}
-.lnk {
-  background: transparent; border: 0;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.lnk:hover { color: var(--accent); }
-
-.title {
-  font-size: 80px;
-  font-weight: 300;
-  line-height: 0.94;
-  letter-spacing: -0.03em;
-  font-variation-settings: "opsz" 144, "SOFT" 30;
-}
-.title em {
-  color: var(--accent);
-  font-style: italic;
-  font-variation-settings: "opsz" 144, "SOFT" 100, "WONK" 1;
-}
-
-/* Stats bar */
-.stats-bar {
+/* ====================================================================
+   Topbar
+   ==================================================================== */
+.topbar {
   display: flex;
   align-items: center;
   gap: 24px;
-  padding: 12px 0 28px;
+  padding: 16px 0;
+  position: sticky;
+  top: 0;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: saturate(180%) blur(16px);
+  -webkit-backdrop-filter: saturate(180%) blur(16px);
+  z-index: 10;
 }
-.stat { display: flex; flex-direction: column; gap: 2px; }
-.stat-num {
-  font-size: 32px;
-  font-weight: 300;
-  font-variation-settings: "opsz" 144;
-  color: var(--text);
+.brand { display: inline-flex; align-items: center; gap: 8px; }
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px; height: 32px;
+  background: rgba(22, 93, 255, 0.10);
+  border-radius: 8px;
 }
-.stat-div {
-  width: 1px;
-  height: 28px;
-  background: var(--border);
-}
-.stat-spacer { flex: 1; }
+.brand-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
 
-/* Creator */
-.creator { margin-bottom: 24px; }
-.creator-grid {
+.nav-links { display: inline-flex; align-items: center; gap: 24px; }
+.nav-link {
+  font-size: 14px;
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: color var(--dur-fast) var(--ease-out);
+}
+.nav-link:hover, .nav-link.active { color: var(--brand); }
+
+.nav-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.nav-search:focus-within { border-color: var(--brand); background: var(--surface); }
+.search-icon { color: var(--ink-mute); font-size: 14px; }
+.search-input {
+  border: 0;
+  background: transparent;
+  outline: 0;
+  font-size: 13px;
+  width: 220px;
+  color: var(--ink);
+}
+.search-input::placeholder { color: var(--ink-mute); }
+
+.nav-actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.nav-user { display: inline-flex; align-items: center; }
+.nav-user .serial { color: var(--ink-2); }
+
+/* ====================================================================
+   Hero stats
+   ==================================================================== */
+.hero-stats-section {
+  padding: 32px 0 16px;
+  position: relative;
+  z-index: 1;
+}
+
+.hero-stats {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  background: linear-gradient(135deg,
+    rgba(22, 93, 255, 0.04) 0%,
+    rgba(123, 123, 255, 0.08) 100%);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-card);
+  padding: 20px;
 }
-.creator-label {
-  color: var(--accent);
-  font-weight: 600;
-}
-.sel { appearance: none; cursor: pointer; }
-
-/* Ledger */
-.empty {
-  text-align: center;
-  padding: 80px 0;
-  color: var(--text-muted);
-}
-.empty-icon {
-  font-family: var(--font-display);
-  font-size: 64px;
-  display: block;
-  margin-bottom: 12px;
-}
-
-.entries {
+.stat-cell {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+.big-num {
+  font-family: var(--font-display);
+  font-size: clamp(32px, 3vw, 44px);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--brand);
+  line-height: 1;
 }
 
-.entry {
-  display: grid;
-  grid-template-columns: 44px 1fr auto;
-  gap: 20px;
+/* ====================================================================
+   Filter strip
+   ==================================================================== */
+.filter-strip {
+  display: flex;
   align-items: center;
-  padding: 20px 28px;
-  cursor: pointer;
-  transition: all 180ms ease;
+  gap: 10px;
+  flex-wrap: wrap;
 }
-.entry:hover {
-  transform: translateX(4px);
-  border-color: var(--accent);
-}
-.entry.archived { opacity: 0.55; }
-.entry.archived:hover { opacity: 0.75; }
-
-.entry-num {
-  font-size: 18px;
-  font-weight: 300;
-  color: var(--text-faint);
-  font-variation-settings: "opsz" 144;
-}
-
-.entry-top {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-bottom: 6px;
-}
-.entry-title {
-  font-size: 20px;
-  font-weight: 380;
-  font-variation-settings: "opsz" 144, "SOFT" 30;
-  margin: 0;
-}
-.entry-id {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-sunken);
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-.entry-meta {
-  display: flex;
-  gap: 22px;
+.filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
   font-size: 13px;
-  color: var(--text-muted);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
 }
-.entry-meta code { font-size: 11px; color: var(--text-secondary); }
-.meta.active { color: var(--good); font-weight: 500; }
+.filter-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-mute); }
+.filter-dot.all { background: var(--brand); }
+.filter-dot.active { background: var(--good); }
+.filter-dot.archived { background: var(--ink-faint); }
+.filter-count {
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-soft);
+  color: var(--ink-mute);
+  font-size: 11px;
+  min-width: 22px;
+  text-align: center;
+}
+.filter-pill:hover { border-color: var(--brand); color: var(--brand); }
+.filter-pill.on { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
+.filter-pill.on .filter-count { background: rgba(255,255,255,0.18); color: var(--ink-invert); }
 
-.entry-act {
+/* ====================================================================
+   Creator
+   ==================================================================== */
+.creator { overflow: hidden; }
+.creator-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+.creator-card {
+  padding: 28px 32px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  align-items: flex-end;
+  gap: 12px;
 }
+.creator-card + .creator-card { border-left: 1px solid var(--border); }
+.creator-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+  margin: 0;
+  color: var(--ink);
+}
+.creator-title strong { color: var(--brand); font-weight: 700; }
+.creator-card .btn-outline,
+.creator-card .btn-primary { align-self: flex-start; margin-top: 4px; }
 
-/* Slide transition */
-.slide-enter-active, .slide-leave-active {
-  transition: all 280ms cubic-bezier(0.2, 0.6, 0.2, 1);
+.slide-down-enter-active, .slide-down-leave-active {
+  transition: all 360ms var(--ease-out);
+  overflow: hidden;
 }
-.slide-enter-from, .slide-leave-to {
+.slide-down-enter-from, .slide-down-leave-to {
   opacity: 0;
   transform: translateY(-8px);
 }
 
-@media (max-width: 700px) {
-  .page { padding: 32px 20px; }
-  .title { font-size: 48px; }
+/* ====================================================================
+   Ledger
+   ==================================================================== */
+.empty {
+  padding: 64px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.empty-icon { font-size: 56px; color: var(--ink-faint); }
+.empty-text {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--ink-2);
+  margin: 4px 0;
+}
+
+.entries { display: flex; flex-direction: column; gap: 10px; }
+.entry {
+  display: grid;
+  grid-template-columns: 132px 1fr auto;
+  gap: 20px;
+  align-items: center;
+  padding: 18px 22px;
+  cursor: pointer;
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+.entry-l {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+.entry-num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-mute);
+}
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+}
+.status-tag.active { background: var(--good-soft); color: var(--good); }
+.status-tag.archived { background: var(--surface-soft); color: var(--ink-mute); border: 1px solid var(--border); }
+.status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+.entry-body { min-width: 0; }
+.entry-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+.entry-meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; color: var(--ink-mute); }
+.meta { display: inline-flex; align-items: baseline; gap: 6px; }
+.meta .serial { font-size: 10px; letter-spacing: 0.06em; }
+.meta code, .meta .mono { font-family: var(--font-mono); color: var(--ink-2); font-size: 11px; }
+
+.entry-act { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.entry-act .btn-ghost { padding: 5px 14px; font-size: 12px; gap: 4px; }
+
+/* ====================================================================
+   Mobile
+   ==================================================================== */
+@media (max-width: 900px) {
+  .page { padding: 0 16px 48px; }
+  .topbar { flex-wrap: wrap; gap: 12px; }
+  .nav-links, .nav-search { display: none; }
+  .nav-actions { margin-left: 0; width: 100%; justify-content: flex-end; }
+  .hero-stats-section { padding: 16px 0 8px; }
   .creator-grid { grid-template-columns: 1fr; }
-  .entry { grid-template-columns: 1fr; padding: 16px 20px; }
-  .entry-num { display: none; }
+  .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }
+  .entry { grid-template-columns: 1fr; padding: 16px 18px; }
+  .entry-act { flex-direction: row; }
 }
 </style>

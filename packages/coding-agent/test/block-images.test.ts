@@ -82,7 +82,7 @@ describe("blockImages setting", () => {
 			const imagePath = path.join(testDir, "test.png");
 			fs.writeFileSync(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
 
-			const result = await processFileArguments([imagePath]);
+			const result = await processFileArguments([imagePath], { cwd: testDir });
 
 			expect(result.images).toHaveLength(1);
 			expect(result.images[0].type).toBe("image");
@@ -93,7 +93,7 @@ describe("blockImages setting", () => {
 			const textPath = path.join(testDir, "test.txt");
 			fs.writeFileSync(textPath, "Hello, world!");
 
-			const result = await processFileArguments([textPath]);
+			const result = await processFileArguments([textPath], { cwd: testDir });
 
 			expect(result.images).toHaveLength(0);
 			expect(result.text).toContain("Hello, world!");

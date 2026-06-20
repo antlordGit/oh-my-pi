@@ -35,7 +35,7 @@ import {
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, isInternalUrlPath } from "./path-utils";
-import { enforcePlanModeWrite, resolvePlanPath } from "./plan-mode-guard";
+import { enforceCwdWriteBoundary, enforcePlanModeWrite, resolvePlanPath } from "./plan-mode-guard";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
@@ -833,6 +833,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
 				const handler = internalRouter.getHandler(scheme);
 				if (handler?.write) {
+					// Workspace boundary guard runs even outside plan mode: paths like
+					// `/etc/passwd` or `../../foo` must never be writable through this tool.
+					enforceCwdWriteBoundary(this.session, path, "write");
 					// Handler-owned writes (vault:// notes, host URIs) mutate user
 					// data outside the local sandbox — plan mode must reject them.
 					enforcePlanModeWrite(this.session, path, { op: "update" });
@@ -869,6 +872,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			}
 			const resolvedArchivePath = await this.#resolveArchiveWritePath(path);
 			if (resolvedArchivePath) {
+				enforceCwdWriteBoundary(this.session, resolvedArchivePath.archivePath, "write archive");
 				enforcePlanModeWrite(this.session, resolvedArchivePath.archivePath, {
 					op: resolvedArchivePath.exists ? "update" : "create",
 				});
@@ -888,6 +892,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			const resolvedSqlitePath = await this.#resolveSqliteWritePath(path);
 			if (resolvedSqlitePath) {
+				enforceCwdWriteBoundary(this.session, resolvedSqlitePath.sqlitePath, "write sqlite");
 				enforcePlanModeWrite(this.session, resolvedSqlitePath.sqlitePath, { op: "update" });
 
 				const sqliteResult = await this.#writeSqliteRow(path, cleanContent, resolvedSqlitePath);
@@ -903,6 +908,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				return sqliteResult;
 			}
 
+			enforceCwdWriteBoundary(this.session, path, "write");
 			enforcePlanModeWrite(this.session, path, { op: "create" });
 			const absolutePath = resolvePlanPath(this.session, path);
 			const batchRequest = getLspBatchRequest(context?.toolCall);

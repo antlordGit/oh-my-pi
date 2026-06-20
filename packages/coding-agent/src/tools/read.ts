@@ -76,6 +76,7 @@ import {
 	stripOutputNotice,
 } from "./output-meta";
 import {
+	assertWithinCwd,
 	expandPath,
 	formatPathRelativeToCwd,
 	type LineRange,
@@ -1870,6 +1871,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const parsed = parseSel(localTarget.sel);
 
 		let absolutePath = resolveReadPath(localReadPath, this.session.cwd);
+		assertWithinCwd(absolutePath, this.session.cwd, "read");
 		let suffixResolution: { from: string; to: string } | undefined;
 
 		let isDirectory = false;

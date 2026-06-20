@@ -43,7 +43,7 @@ import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import type { OutputMeta } from "./output-meta";
-import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
+import { assertWithinCwd, formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import {
 	formatExpandHint,
 	formatStatusIcon,
@@ -688,7 +688,9 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					throw new ToolError("program is required for launch");
 				}
 				const commandCwd = params.cwd ? resolveToCwd(params.cwd, this.session.cwd) : this.session.cwd;
+				assertWithinCwd(commandCwd, this.session.cwd, "debug cwd");
 				const program = resolveToCwd(params.program, commandCwd);
+				assertWithinCwd(program, this.session.cwd, "debug program");
 				const programKind = await classifyLaunchProgram(program);
 				const adapter = selectLaunchAdapter(program, commandCwd, params.adapter, programKind);
 				if (!adapter) {
@@ -715,6 +717,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					throw new ToolError("attach requires pid or port");
 				}
 				const commandCwd = params.cwd ? resolveToCwd(params.cwd, this.session.cwd) : this.session.cwd;
+				assertWithinCwd(commandCwd, this.session.cwd, "debug cwd");
 				const adapter = selectAttachAdapter(commandCwd, params.adapter, params.port);
 				if (!adapter) {
 					if (params.adapter === "debugpy") {
@@ -749,6 +752,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					throw new ToolError("set_breakpoint requires file+line or function");
 				}
 				const file = resolveToCwd(params.file, this.session.cwd);
+				assertWithinCwd(file, this.session.cwd, "debug breakpoint");
 				const response = await dapSessionManager.setBreakpoint(
 					file,
 					params.line,
@@ -775,6 +779,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					throw new ToolError("remove_breakpoint requires file+line or function");
 				}
 				const file = resolveToCwd(params.file, this.session.cwd);
+				assertWithinCwd(file, this.session.cwd, "debug breakpoint");
 				const response = await dapSessionManager.removeBreakpoint(
 					file,
 					params.line,

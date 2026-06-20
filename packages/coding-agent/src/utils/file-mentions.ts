@@ -20,7 +20,7 @@ import {
 	truncateHead,
 	truncateHeadBytes,
 } from "../session/streaming-output";
-import { resolveReadPath } from "../tools/path-utils";
+import { assertWithinCwd, isPathInside, resolveReadPath } from "../tools/path-utils";
 import { formatDimensionNote, resizeImage } from "./image-resize";
 
 /** Regex to match @filepath patterns in text */
@@ -63,6 +63,7 @@ async function resolveMentionPath(filePath: string, cwd: string): Promise<string
 	// reference. Fuzzy/prefix guessing here previously dragged in unrelated same-named
 	// files; that disambiguation belongs to the selector's display, not post-send.
 	const absolutePath = resolveReadPath(filePath, cwd);
+	if (!isPathInside(absolutePath, cwd)) return null;
 	return (await pathExists(absolutePath)) ? filePath : null;
 }
 
@@ -198,6 +199,7 @@ export async function generateFileMentionMessages(
 			continue;
 		}
 		const absolutePath = resolveReadPath(resolvedPath, cwd);
+		assertWithinCwd(absolutePath, cwd, "file mention");
 		try {
 			const stat = await Bun.file(absolutePath).stat();
 			if (stat.isDirectory()) {

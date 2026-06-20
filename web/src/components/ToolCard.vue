@@ -48,21 +48,24 @@ const argSummary = computed(() => {
       <span class="tool-name mono">{{ toolName }}</span>
       <span class="tool-summary mono">{{ argSummary }}</span>
       <span class="tool-status">
-        <span v-if="status === 'running'" class="dot-run"></span>
-        <span v-else-if="isError" class="badge badge-err mono">失败</span>
-        <span v-else class="badge badge-ok mono">完成</span>
+        <span v-if="status === 'running'" class="status-pill running">
+          <span class="live-dot"></span>
+          <span class="mono">执行中</span>
+        </span>
+        <span v-else-if="isError" class="status-pill err mono">失败</span>
+        <span v-else class="status-pill ok mono">完成</span>
       </span>
-      <span class="tool-caret mono">{{ expanded ? '▾' : '▸' }}</span>
+      <span class="tool-caret mono">{{ expanded ? '−' : '+' }}</span>
     </header>
 
     <transition name="expand">
       <div v-if="expanded" class="tool-body">
         <div v-if="argsText" class="section">
-          <div class="section-label mono">参数</div>
+          <div class="section-label mono">参数 · arguments</div>
           <pre class="section-pre mono">{{ argsText }}</pre>
         </div>
         <div v-if="resultText && status === 'done'" class="section">
-          <div class="section-label mono">结果</div>
+          <div class="section-label mono">结果 · result</div>
           <pre class="section-pre mono">{{ resultText }}</pre>
         </div>
       </div>
@@ -73,82 +76,91 @@ const argSummary = computed(() => {
 <style scoped>
 .tool {
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-raised);
+  border-radius: var(--radius);
+  background: var(--surface);
   margin: 6px 0;
   overflow: hidden;
-  transition: border-color 200ms, box-shadow 200ms;
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
 }
-.tool--running { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-.tool--done    { border-color: var(--border); }
-.tool--error   { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.tool--running { border-color: var(--brand); background: var(--brand-soft); }
+.tool--done { border-color: var(--border); }
+.tool--error { border-color: var(--danger); background: var(--danger-soft); }
 
 .tool-head {
   display: grid;
-  grid-template-columns: 24px auto 1fr auto auto;
-  gap: 10px;
+  grid-template-columns: 22px auto 1fr auto auto;
+  gap: 12px;
   align-items: center;
   padding: 10px 16px;
   cursor: pointer;
   user-select: none;
-  transition: background 140ms;
+  transition: background var(--dur-fast) var(--ease-out);
 }
-.tool-head:hover { background: var(--bg-base); }
+.tool-head:hover { background: var(--surface-hover); }
 
-.tool-glyph { font-size: 14px; color: var(--text-muted); font-weight: 600; }
-.tool--running .tool-glyph { color: var(--accent); }
+.tool-glyph {
+  font-size: 13px;
+  color: var(--ink-mute);
+  font-weight: 600;
+  width: 22px; text-align: center;
+}
+.tool--running .tool-glyph { color: var(--brand); }
 .tool--done .tool-glyph { color: var(--good); }
 .tool--error .tool-glyph { color: var(--danger); }
 
 .tool-name {
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text);
-  font-weight: 500;
-}
-.tool-summary { font-size: 11px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-.dot-run {
-  width: 8px; height: 8px;
-  background: var(--accent);
-  border-radius: 50%;
-  animation: pulse-glow 1.2s ease-in-out infinite;
-}
-
-.badge {
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  padding: 2px 8px;
-  border-radius: 4px;
-  border: 1px solid;
+  font-size: 12px;
+  color: var(--ink);
   font-weight: 600;
 }
-.badge-ok  { color: var(--good); border-color: var(--good); }
-.badge-err { color: var(--danger); border-color: var(--danger); }
+.tool-summary {
+  font-size: 11px;
+  color: var(--ink-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-.tool-caret { font-size: 10px; color: var(--text-faint); }
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-weight: 500;
+}
+.status-pill.running { background: var(--brand); color: var(--ink-invert); }
+.status-pill.running .live-dot { background: var(--ink-invert); }
+.status-pill.ok { background: var(--good-soft); color: var(--good); }
+.status-pill.err { background: var(--danger-soft); color: var(--danger); }
+
+.tool-caret {
+  font-size: 14px;
+  color: var(--ink-mute);
+  width: 16px;
+  text-align: center;
+  font-family: var(--font-mono);
+}
 
 /* Body */
 .tool-body {
   border-top: 1px solid var(--border);
   padding: 12px 16px 14px;
-  background: var(--bg-sunken);
+  background: var(--surface-soft);
 }
 .section { margin-top: 10px; }
 .section:first-child { margin-top: 0; }
 .section-label {
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  color: var(--text-muted);
+  font-size: 11px;
+  color: var(--ink-mute);
   margin-bottom: 6px;
-  text-transform: uppercase;
 }
 .section-pre {
   margin: 0;
   font-size: 12px;
   line-height: 1.55;
-  color: var(--text-secondary);
+  color: var(--ink-2);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 320px;
@@ -156,7 +168,16 @@ const argSummary = computed(() => {
 }
 
 /* Expand transition */
-.expand-enter-active, .expand-leave-active { transition: all 220ms ease; }
-.expand-enter-from, .expand-leave-to { opacity: 0; max-height: 0; }
-.expand-enter-to, .expand-leave-from { opacity: 1; max-height: 500px; }
+.expand-enter-active, .expand-leave-active {
+  transition: all 240ms var(--ease-out);
+  overflow: hidden;
+}
+.expand-enter-from, .expand-leave-to {
+  opacity: 0;
+  max-height: 0;
+}
+.expand-enter-to, .expand-leave-from {
+  opacity: 1;
+  max-height: 600px;
+}
 </style>

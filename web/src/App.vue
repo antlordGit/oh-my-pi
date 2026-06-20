@@ -1,37 +1,43 @@
 <script setup lang="ts">
 import { onMounted } from 'vue'
 import { useAuthStore } from '@/stores/auth'
-import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, type GlobalThemeOverrides } from 'naive-ui'
+import {
+  NConfigProvider, NMessageProvider, NDialogProvider,
+  zhCN, type GlobalThemeOverrides,
+} from 'naive-ui'
 
 const auth = useAuthStore()
 onMounted(() => {
   auth.bootstrap()
 })
 
-// Editorial Light — high contrast, vivid coral accent.
+// "Volcano" — Volcengine Agent Plan inspired.
+// Pure white, brand blue #165DFF, heavy Chinese display type.
 const themeOverrides: GlobalThemeOverrides = {
   common: {
-    fontFamily: '"DM Sans", system-ui, -apple-system, "Helvetica Neue", sans-serif',
-    fontFamilyMono: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace',
-    bodyColor: '#faf7f2',
-    cardColor: '#ffffff',
-    modalColor: '#ffffff',
-    popoverColor: '#ffffff',
-    borderColor: '#e5e0d8',
-    dividerColor: '#f0ebe4',
-    textColorBase: '#1a1c1e',
-    textColor1: '#1a1c1e',
-    textColor2: '#4e5256',
-    textColor3: '#8b8f94',
-    primaryColor: '#e04e3c',
-    primaryColorHover: '#f06b5a',
-    primaryColorPressed: '#b83a2c',
-    primaryColorSuppl: '#e04e3c',
-    successColor: '#2d8a5e',
-    warningColor: '#d4851e',
-    errorColor: '#d14343',
-    borderRadius: '10px',
-    borderRadiusSmall: '6px',
+    fontFamily: '"PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC", "Noto Sans SC", "Microsoft YaHei", "Inter", system-ui, -apple-system, sans-serif',
+    fontFamilyMono: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
+    bodyColor: '#FFFFFF',
+    cardColor: '#FFFFFF',
+    modalColor: '#FFFFFF',
+    popoverColor: '#FFFFFF',
+    borderColor: '#E5E6EB',
+    dividerColor: '#E5E6EB',
+    textColorBase: '#1D2129',
+    textColor1: '#1D2129',
+    textColor2: '#4E5969',
+    textColor3: '#86909C',
+    primaryColor: '#165DFF',
+    primaryColorHover: '#0E49D6',
+    primaryColorPressed: '#0A3DB8',
+    primaryColorSuppl: '#165DFF',
+    infoColor: '#165DFF',
+    infoColorHover: '#0E49D6',
+    successColor: '#00B42A',
+    warningColor: '#FF7D00',
+    errorColor: '#F53F3F',
+    borderRadius: '12px',
+    borderRadiusSmall: '8px',
     fontWeightStrong: '600',
   },
   Card: {
@@ -41,7 +47,11 @@ const themeOverrides: GlobalThemeOverrides = {
 </script>
 
 <template>
-  <NConfigProvider :theme-overrides="themeOverrides" :locale="zhCN">
+  <NConfigProvider
+    :theme-overrides="themeOverrides"
+    :locale="zhCN"
+    class="omp-root"
+  >
     <NMessageProvider>
       <NDialogProvider>
         <router-view />
@@ -49,3 +59,11 @@ const themeOverrides: GlobalThemeOverrides = {
     </NMessageProvider>
   </NConfigProvider>
 </template>
+
+<style scoped>
+.omp-root {
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
+}
+</style>

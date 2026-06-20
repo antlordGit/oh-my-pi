@@ -116,19 +116,31 @@ public class AdminController {
 
     @GetMapping("/sessions")
     public Object listSessions() {
-        return sessions.findAll().stream().map(m -> Map.of(
-                "sessionId", m.getSessionId(),
-                "userId", m.getUserId(),
-                "repoId", m.getRepoId(),
-                "status", m.getStatus(),
-                "title", m.getTitle() == null ? "" : m.getTitle(),
-                "lastActiveAt", m.getLastActiveAt() == null ? null : m.getLastActiveAt().toString()
-        )).toList();
+        return sessions.findAll().stream().map(m -> {
+            // processAlive reflects the live OmpRpcClient in ProcessPool (not the DB column).
+            // effectiveStatus prefers the live state for admin visibility, then falls back to DB.
+            // DB status is kept untouched so archive/unarchive flows still see the persisted value.
+            boolean processAlive = pool.isActive(m.getSessionId());
+            String effectiveStatus = processAlive ? "active" : m.getStatus();
+            return Map.<String, Object>of(
+                    "sessionId", m.getSessionId(),
+                    "userId", m.getUserId(),
+                    "repoId", m.getRepoId(),
+                    "status", m.getStatus(),
+                    "processAlive", processAlive,
+                    "effectiveStatus", effectiveStatus,
+                    "title", m.getTitle() == null ? "" : m.getTitle(),
+                    "lastActiveAt", m.getLastActiveAt() == null ? null : m.getLastActiveAt().toString()
+            );
+        }).toList();
     }
 
     @PostMapping("/sessions/{id}/kill")
     public Map<String, Object> killSession(@PathVariable String id) {
-        pool.evict(id);
+        // Mirror SessionManager.archive: persist status=archived AND evict the live process.
+        // ProcessPool alone leaves the DB row as "active", so the next listSessions() would
+        // mask the kill. archive() does both in one transaction.
+        sessionManager.archive(id);
         return Map.of("ok", true);
     }
 

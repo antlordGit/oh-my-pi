@@ -16,6 +16,7 @@ import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
 import { formatFullOutputReference, type OutputMeta } from "./output-meta";
 import {
+	assertWithinCwd,
 	expandDelimitedPathEntries,
 	formatPathRelativeToCwd,
 	hasGlobPathChars,
@@ -197,6 +198,7 @@ export class FindTool implements AgentTool<typeof findSchema, FindToolDetails> {
 				if (target.searchPath === "/") {
 					throw new ToolError("Searching from root directory '/' is not allowed");
 				}
+				assertWithinCwd(target.searchPath, this.session.cwd, "find");
 			}
 
 			const requestedLimit = limit ?? DEFAULT_LIMIT;

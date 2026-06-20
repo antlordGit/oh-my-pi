@@ -756,7 +756,7 @@ describe("tool path arrays", () => {
 		expect(details?.scopePath).toBe("packages");
 	});
 
-	it("find keeps paths outside cwd absolute", async () => {
+	it("find rejects paths outside cwd", async () => {
 		const outsideDir = await fs.mkdtemp(path.join(path.dirname(tempDir), "find-outside-"));
 		try {
 			await Bun.write(path.join(outsideDir, "outside.txt"), "outside\n");
@@ -765,18 +765,7 @@ describe("tool path arrays", () => {
 			expect(tool).toBeDefined();
 			if (!tool) throw new Error("Missing find tool");
 
-			const result = await tool.execute("find-outside-cwd", {
-				paths: [outsideDir],
-			});
-			const text = getText(result);
-			const expectedPath = path.join(outsideDir, "outside.txt").replace(/\\/g, "/");
-			const details = result.details as { fileCount?: number; scopePath?: string; files?: string[] } | undefined;
-
-			expect(text).toContain(`# ${outsideDir.replace(/\\/g, "/")}/\noutside.txt`);
-			expect(text).not.toContain("../");
-			expect(details?.fileCount).toBe(1);
-			expect(details?.files).toEqual([expectedPath]);
-			expect(details?.scopePath).toBe(outsideDir.replace(/\\/g, "/"));
+			await expect(tool.execute("find-outside-cwd", { paths: [outsideDir] })).rejects.toThrow(/outside workspace/);
 		} finally {
 			await fs.rm(outsideDir, { recursive: true, force: true });
 		}

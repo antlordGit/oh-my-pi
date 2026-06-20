@@ -47,6 +47,10 @@ export async function archive(sessionId: string): Promise<void> {
   await api.post(`/api/sessions/${sessionId}/archive`)
 }
 
+export async function unarchive(sessionId: string): Promise<void> {
+  await api.post(`/api/sessions/${sessionId}/unarchive`)
+}
+
 export async function newSession(sessionId: string, parentSession?: string): Promise<any> {
   const r = await api.post(`/api/sessions/${sessionId}/new-session`, { parentSession })
   return r.data

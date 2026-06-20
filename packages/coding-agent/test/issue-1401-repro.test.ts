@@ -54,7 +54,7 @@ describe("processFileArguments", () => {
 		const pdfPath = path.join(testDir, "document.pdf");
 		fs.writeFileSync(pdfPath, createPdfWithText("Hello PDF from issue 1401"));
 
-		const result = await processFileArguments([pdfPath], { autoResizeImages: false });
+		const result = await processFileArguments([pdfPath], { autoResizeImages: false, cwd: testDir });
 
 		expect(result.images).toEqual([]);
 		expect(result.text).toContain("Hello PDF from issue 1401");

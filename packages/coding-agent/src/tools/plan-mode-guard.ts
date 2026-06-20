@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { resolveLocalRoot, resolveLocalUrlToPath, resolveVaultUrlToPath } from "../internal-urls";
 import type { ToolSession } from ".";
-import { normalizeLocalScheme, resolveToCwd } from "./path-utils";
+import { assertWithinCwd, normalizeLocalScheme, resolveToCwd } from "./path-utils";
 import { ToolError } from "./tool-errors";
 
 const VAULT_SCHEME_PREFIX = "vault:";
@@ -105,4 +105,22 @@ export function enforcePlanModeWrite(
 	throw new ToolError(
 		"Plan mode: the working tree is read-only. Write your plan to a local://<slug>-plan.md file instead.",
 	);
+}
+
+/**
+ * Workspace boundary guard for write/edit tools.
+ *
+ * Rejects any target that resolves outside the session cwd. The `local://` and
+ * `vault://` schemes are exempt because they target the session artifact
+ * sandbox / vault, not the working tree. Run before plan-mode and any other
+ * file-system mutation so the working tree cannot be touched via paths like
+ * `/etc/passwd` or `../../something`.
+ */
+export function enforceCwdWriteBoundary(session: ToolSession, targetPath: string, context = "write"): void {
+	const normalized = normalizeLocalScheme(targetPath);
+	if (normalized.startsWith(LOCAL_SCHEME_PREFIX) || normalized.startsWith(VAULT_SCHEME_PREFIX)) return;
+	if (targetsLocalSandbox(session, normalized)) return;
+	const resolved = resolvePlanPath(session, normalized);
+	const sandboxRoot = localSandboxRoot(session);
+	assertWithinCwd(resolved, session.cwd, context, sandboxRoot ? [sandboxRoot] : undefined);
 }

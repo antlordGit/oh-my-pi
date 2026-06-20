@@ -26,7 +26,7 @@ import { isAuthenticated, type ModelRegistry } from "../config/model-registry";
 import type { CustomTool } from "../extensibility/custom-tools/types";
 import { ohMyPiXAIUserAgent, resolveXAIHttpCredentials } from "../lib/xai-http";
 import imageGenDescription from "../prompts/tools/image-gen.md" with { type: "text" };
-import { resolveReadPath } from "./path-utils";
+import { assertWithinCwd, resolveReadPath } from "./path-utils";
 
 const DEFAULT_MODEL = "gemini-3-pro-image-preview";
 const DEFAULT_OPENROUTER_MODEL = "google/gemini-3-pro-image-preview";
@@ -601,6 +601,7 @@ async function findImageApiKey(
 
 async function loadImageFromPath(imagePath: string, cwd: string): Promise<InlineImageData> {
 	const resolved = resolveReadPath(imagePath, cwd);
+	assertWithinCwd(resolved, cwd, "image-gen input");
 	try {
 		const buffer = await Bun.file(resolved).bytes();
 		if (buffer.length > MAX_IMAGE_SIZE) {

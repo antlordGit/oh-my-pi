@@ -10,6 +10,7 @@ import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import { z } from "zod/v4";
 import { recordFileSnapshot } from "../edit/file-snapshot-store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { resolveLocalRoot } from "../internal-urls";
 import type { LocalProtocolOptions } from "../internal-urls/local-protocol";
 import { InternalUrlRouter } from "../internal-urls/router";
 import type { InternalResource, ResolveContext } from "../internal-urls/types";
@@ -40,6 +41,7 @@ import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } fro
 import { formatMatchLine } from "./match-line-format";
 import type { OutputMeta } from "./output-meta";
 import {
+	assertWithinCwd,
 	expandDelimitedPathEntries,
 	hasGlobPathChars,
 	isLineInRanges,
@@ -222,6 +224,7 @@ async function resolveArchiveSearchPaths(
 		if (!member) continue;
 
 		const archiveAbs = resolveReadPath(member.archivePath, cwd);
+		assertWithinCwd(archiveAbs, cwd, "search archive");
 		let archive = archiveCache.get(archiveAbs);
 		if (!archive) {
 			try {
@@ -685,6 +688,21 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 		});
 	}
 
+	/** Roots the workspace-boundary guard should treat as inside the workspace.
+	 *  Internal-URL-backed files (`local://`, `vault://`, …) live outside cwd
+	 *  but must remain reachable from search/read/write tools. */
+	#sandboxRoots(): string[] | undefined {
+		try {
+			const root = resolveLocalRoot({
+				getArtifactsDir: this.session.getArtifactsDir,
+				getSessionId: this.session.getSessionId,
+			});
+			return [path.resolve(root)];
+		} catch {
+			return undefined;
+		}
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: SearchParams,
@@ -745,6 +763,7 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 					if (resolved === spec.clean && !archiveDisplayMap.has(resolved)) {
 						// Non-archive entry; ensure the cleaned path resolves to a regular file.
 						const absKey = path.resolve(resolveReadPath(resolved, this.session.cwd));
+						assertWithinCwd(absKey, this.session.cwd, "search range");
 						const stats = await stat(absKey).catch(() => null);
 						if (!stats) {
 							throw new ToolError(`Path not found for line-range selector: ${spec.original}`);
@@ -800,6 +819,7 @@ export class SearchTool implements AgentTool<typeof searchSchema, SearchToolDeta
 						settings: this.session.settings,
 						signal,
 						localProtocolOptions: this.session.localProtocolOptions,
+						extraRoots: this.#sandboxRoots(),
 					});
 					searchPath = scope.searchPath;
 					isDirectory = scope.isDirectory;

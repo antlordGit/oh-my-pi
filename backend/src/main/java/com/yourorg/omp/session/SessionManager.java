@@ -111,6 +111,15 @@ public class SessionManager {
         pool.evict(sessionId);
     }
 
+    @Transactional
+    public void unarchive(String sessionId) {
+        repo.findBySessionId(sessionId).ifPresent(m -> {
+            m.setStatus("active");
+            m.setLastActiveAt(Instant.now());
+            repo.save(m);
+        });
+    }
+
     /** Acquire (spawn or reuse) the running OmpRpcClient for this session. */
     public OmpRpcClient acquireClient(SessionMeta meta) {
         log.info("[acquire] session={} user={} repo={} resumePath={}",
