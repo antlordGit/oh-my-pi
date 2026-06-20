@@ -25,14 +25,21 @@ const filteredSessions = computed(() =>
   filter.value === 'all' ? sessions.value : sessions.value.filter(s => s.status === filter.value),
 )
 
-const activeCount = computed(() => sessions.value.filter(s => s.status === 'active').length)
-const archivedCount = computed(() => sessions.value.filter(s => s.status === 'archived').length)
+const activeCount = computed(() => sessions.value.filter(s => effectiveStatus(s) === 'active').length)
+const archivedCount = computed(() => sessions.value.filter(s => effectiveStatus(s) === 'archived').length)
 const totalSessions = computed(() => sessions.value.length)
 
 async function refresh() {
   loading.value = true
   try {
-    sessions.value = await listSessions()
+    const list = await listSessions()
+    // Newest first: most recently active sessions float to the top.
+    list.sort((a, b) => {
+      const ta = a.lastActiveAt ? Date.parse(a.lastActiveAt) : 0
+      const tb = b.lastActiveAt ? Date.parse(b.lastActiveAt) : 0
+      return tb - ta
+    })
+    sessions.value = list
     repos.value = await listRepos()
     if (!newSessionRepo.value && repos.value[0]) newSessionRepo.value = repos.value[0].repoId
   } finally { loading.value = false }
@@ -66,6 +73,19 @@ async function onArchive(id: string) {
 async function onUnarchive(id: string) {
   try { await unarchive(id); msg.success('已恢复'); await refresh() }
   catch (e: any) { msg.error(e?.response?.data?.error || '恢复失败') }
+}
+
+function effectiveStatus(s: SessionSummary): 'active' | 'archived' {
+  // Prefer admin-side optimistic override (persisted in sessionStorage) --
+  // keyed by full UUID; also match on the first 8 chars of the sessionId
+  // so that both views can find the same override entry.
+  const key = 'omp.admin.sessionOverrides'
+  try {
+    const overrides = JSON.parse(sessionStorage.getItem(key) || '{}') as Record<string, string>
+    const entry = overrides[s.sessionId]
+    if (entry) return entry as 'active' | 'archived'
+  } catch {}
+  return s.status === 'active' ? 'active' : 'archived'
 }
 
 function fmtDate(s?: string) {
@@ -201,9 +221,9 @@ onMounted(refresh)
         >
           <div class="entry-l">
             <span class="entry-num">{{ String(idx + 1).padStart(2, '0') }}</span>
-            <span class="status-tag" :class="s.status">
+            <span class="status-tag" :class="effectiveStatus(s)">
               <span class="status-dot"></span>
-              {{ s.status === 'active' ? '活跃' : '归档' }}
+              {{ effectiveStatus(s) === 'active' ? '活跃' : '归档' }}
             </span>
           </div>
           <div class="entry-body">
@@ -228,7 +248,7 @@ onMounted(refresh)
               <span>打开</span>
               <span class="caret">→</span>
             </button>
-            <button v-if="s.status === 'active'" class="btn-mini-danger" @click="onArchive(s.sessionId)">归档</button>
+            <button v-if="effectiveStatus(s) === 'active'" class="btn-mini-danger" @click="onArchive(s.sessionId)">归档</button>
             <button v-else class="btn-mini-danger" @click="onUnarchive(s.sessionId)">恢复</button>
           </div>
         </article>

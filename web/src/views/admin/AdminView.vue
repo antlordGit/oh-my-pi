@@ -34,8 +34,46 @@ function effectiveStatus(s: any): 'active' | 'archived' {
 }
 
 async function loadConfig() { config.value = (await api.get('/admin/config')).data }
+
+// Persistent optimistic status — survives page reload so an admin who kills a
+// session and refreshes the page still sees "archived" until the server-side
+// state catches up (kill is async on the backend). Keyed by sessionId, value
+// is the operator-confirmed status: 'active' | 'archived'.
+const OPTS_KEY = 'omp.admin.sessionOverrides'
+function loadOverrides(): Record<string, 'active' | 'archived'> {
+  try { return JSON.parse(sessionStorage.getItem(OPTS_KEY) || '{}') } catch { return {} }
+}
+function saveOverrides(map: Record<string, 'active' | 'archived'>) {
+  try { sessionStorage.setItem(OPTS_KEY, JSON.stringify(map)) } catch {}
+}
+function setOverride(id: string, status: 'active' | 'archived') {
+  const m = loadOverrides(); m[id] = status; saveOverrides(m)
+}
+function clearOverride(id: string) {
+  const m = loadOverrides(); delete m[id]; saveOverrides(m)
+}
+
 async function loadSessions() {
-  sessions.value = (await api.get('/admin/sessions')).data
+  const fresh: any[] = (await api.get('/admin/sessions')).data
+  // Newest first: sort by lastActiveAt descending so freshly created/updated
+  // sessions bubble to the top of the admin table.
+  fresh.sort((a, b) => {
+    const ta = a.lastActiveAt ? Date.parse(a.lastActiveAt) : 0
+    const tb = b.lastActiveAt ? Date.parse(b.lastActiveAt) : 0
+    return tb - ta
+  })
+  // Apply operator overrides so killed/restored rows stick across reloads.
+  const overrides = loadOverrides()
+  for (const f of fresh) {
+    const ov = overrides[f.sessionId]
+    if (ov) f.effectiveStatus = ov
+    else {
+      // Fallback to in-memory optimistic update (covers same-tab refresh).
+      const prev = sessions.value.find(s => s.sessionId === f.sessionId)
+      if (prev && prev.effectiveStatus) f.effectiveStatus = prev.effectiveStatus
+    }
+  }
+  sessions.value = fresh
   pool.value = (await api.get('/admin/pool')).data
 }
 async function loadAudit() {
@@ -85,15 +123,18 @@ async function deleteConfig(key: string) { await api.delete('/admin/config/' + e
 async function killSession(id: string) {
   const row = sessions.value.find(s => s.sessionId === id)
   if (row) row.effectiveStatus = 'archived'
+  setOverride(id, 'archived')
   try {
     await api.post('/admin/sessions/' + id + '/kill')
     msg.success('已终止')
   } catch (e: any) {
     if (row) row.effectiveStatus = 'active'
+    clearOverride(id)
     msg.error(e?.response?.data?.error || '终止失败')
     return
   }
-  // Reconcile with server; do not block the UI on this.
+  // Reload from server to sync real state; the persisted override keeps the
+  // row archived even when the backend hasn't finished archiving yet.
   loadSessions()
 }
 
@@ -105,11 +146,13 @@ async function killSession(id: string) {
 async function restoreSession(id: string) {
   const row = sessions.value.find(s => s.sessionId === id)
   if (row) row.effectiveStatus = 'active'
+  setOverride(id, 'active')
   try {
     await unarchiveSession(id)
     msg.success('已恢复')
   } catch (e: any) {
     if (row) row.effectiveStatus = 'archived'
+    clearOverride(id)
     msg.error(e?.response?.data?.error || '恢复失败')
     return
   }
@@ -138,7 +181,7 @@ onMounted(loadAll)
             <path d="M4 20 L12 4 L20 20 L16 20 L12 12 L8 20 Z" fill="#165DFF"/>
           </svg>
         </span>
-        <span class="brand-name">OMP</span>
+        <span class="brand-name">管理</span>
       </div>
 
       <div class="nav-search">

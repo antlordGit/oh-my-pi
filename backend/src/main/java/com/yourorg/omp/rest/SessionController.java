@@ -185,6 +185,24 @@ public class SessionController {
         return Map.of("ok", true);
     }
 
+    /**
+     * Resume a previously archived/killed session: unarchive + force a fresh process spawn
+     * so the next getMessages() call reads the saved session file (passed as --resume).
+     */
+    @PostMapping("/{sessionId}/resume")
+    public Map<String, Object> resume(@PathVariable String sessionId) throws Exception {
+        SessionMeta m = require(sessionId);
+        long active = sessions.countActiveByUser(m.getUserId());
+        if (active >= props.perUserSessionLimit()) {
+            throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
+        }
+        sessions.unarchive(sessionId);
+        m.setStatus("active");
+        // Kick the pool so the next sendCommand spawns with --resume
+        sessions.resumeSession(sessionId);
+        return Map.of("ok", true);
+    }
+
     private SessionMeta require(String sessionId) {
         Long uid = currentUser.requireId();
         return sessions.findOwned(sessionId, uid).orElseThrow(() -> new RuntimeException("Session not found"));

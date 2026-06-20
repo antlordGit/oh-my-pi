@@ -7,6 +7,7 @@ import com.yourorg.omp.entity.SessionMeta;
 import com.yourorg.omp.pool.ProcessPool;
 import com.yourorg.omp.repo.SessionMetaRepository;
 import com.yourorg.omp.rpc.OmpRpcClient;
+import com.yourorg.omp.rpc.RpcCommands;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -120,6 +121,15 @@ public class SessionManager {
         });
     }
 
+    /**
+     * Force the pool to evict the session so the next sendCommand/prompt will
+     * spawn a fresh omp process with {@code --resume <sessionFile>}, thereby
+     * restoring the saved conversation history.
+     */
+    public void resumeSession(String sessionId) {
+        pool.evict(sessionId);
+    }
+
     /** Acquire (spawn or reuse) the running OmpRpcClient for this session. */
     public OmpRpcClient acquireClient(SessionMeta meta) {
         log.info("[acquire] session={} user={} repo={} resumePath={}",
@@ -127,7 +137,38 @@ public class SessionManager {
                 meta.getOmpSessionFile() == null ? "<none>" : meta.getOmpSessionFile());
         OmpRpcClient client = pool.acquire(meta.getUserId(), meta.getRepoId(), meta.getSessionId(), meta.getOmpSessionFile());
         log.info("[acquire] session={} got client, alive={}", meta.getSessionId(), client.isAlive());
+        // First-time capture of omp's on-disk session file so a later resume (--resume) can
+        // restore the conversation. omp never volunteers this path over session_info_update,
+        // so we read it once via get_state and persist it. Guarded by ompSessionFile == null
+        // to avoid repeat round-trips; sent via client.send() directly (NOT sendCommand) to
+        // avoid re-entering acquireClient.
+        if (meta.getOmpSessionFile() == null || meta.getOmpSessionFile().isBlank()) {
+            captureSessionFile(meta.getSessionId(), client);
+        }
         return client;
+    }
+
+    /**
+     * Ask the running omp process for its session file path and persist it. Best-effort and
+     * asynchronous: failures are logged but never block the caller. Once recorded, a subsequent
+     * resume spawns omp with {@code --resume <sessionFile>} and restores the saved history.
+     */
+    private void captureSessionFile(String sessionId, OmpRpcClient client) {
+        if (!client.isAlive()) return;
+        client.send(RpcCommands.getState()).whenComplete((resp, err) -> {
+            if (err != null) {
+                log.debug("[capture-session-file] session={} get_state failed: {}", sessionId, err.getMessage());
+                return;
+            }
+            JsonNode data = resp == null ? null : resp.path("data");
+            String sessionFile = data == null ? null : data.path("sessionFile").asText(null);
+            if (sessionFile == null || sessionFile.isBlank()) {
+                log.debug("[capture-session-file] session={} no sessionFile in get_state", sessionId);
+                return;
+            }
+            recordSessionFile(sessionId, sessionFile);
+            log.info("[capture-session-file] session={} recorded sessionFile={}", sessionId, sessionFile);
+        });
     }
 
     /**

@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getSession, getMessages, getState,
-  prompt, abort as abortSession, wsUrl,
+  prompt, abort as abortSession, unarchive as unarchiveSession, wsUrl,
   type SessionSummary,
 } from '@/api/session'
 import { useMessage } from 'naive-ui'
@@ -38,23 +38,55 @@ interface TreeEntry {
 }
 const timeline = ref<TimelineItem[]>([])
 const turnLog = ref<{ role: 'user' | 'assistant'; timeline: TimelineItem[]; userText?: string }[]>([])
-const history = ref<any[]>([])
 
 let itemOrder = 0
+
+const isArchived = ref(false)
+const restoringArchive = ref(false)
+
+async function restoreFromArchive() {
+  if (restoringArchive.value) return
+  restoringArchive.value = true
+  try {
+    // Call the resume API — unarchive + spawn fresh process with --resume <sessionFile>
+    await api.post(`/api/sessions/${sessionId.value}/resume`)
+    isArchived.value = false
+    if (session.value) session.value.status = 'active'
+    // Load messages from the resumed session and reconnect WS
+    await refresh()
+    connectWs()
+    msg.success('会话已恢复，可以继续对话')
+  } catch (e: any) {
+    isArchived.value = true
+    if (session.value) session.value.status = 'archived'
+    msg.error(e?.response?.data?.error || '恢复失败')
+  } finally {
+    restoringArchive.value = false
+  }
+}
 
 async function refresh() {
   try {
     session.value = await getSession(sessionId.value)
+    isArchived.value = session.value?.status === 'archived'
+    // Only load messages and connect ws if session is active.
+    if (isArchived.value) return
     try {
       const messages = await getMessages(sessionId.value)
-      history.value = messages.messages || []
+      const all = messages.messages || []
       turnLog.value = []
+
+      // First pass: index every tool result by its tool-call id so the matching
+      // tool-call entry can render its output inline.
       const toolResults: Record<string, { result: any; error: boolean }> = {}
-      for (const m of (messages.messages || [])) {
+      for (const m of all) {
         if (m.role === 'tool' || m.role === 'toolResult') {
           collectToolResults(m.content, toolResults)
         }
       }
+
+      // Second pass: fold the flat message list into user/assistant turns.
+      // Consecutive assistant messages share one timeline; a user message flushes it.
       let currentAssistantTimeline: TimelineItem[] | null = null
       let order = 0
       const flush = () => {
@@ -63,7 +95,7 @@ async function refresh() {
         }
         currentAssistantTimeline = null
       }
-      for (const m of (messages.messages || [])) {
+      for (const m of all) {
         if (m.role === 'user') {
           flush()
           turnLog.value.push({ role: 'user', timeline: [], userText: extractText(m.content) })
@@ -127,8 +159,6 @@ function extractText(content: any): string {
   }
   return ''
 }
-
-function buildTimeline(_content: any): TimelineItem[] { return [] }
 
 function connectWs() {
   if (!sessionId.value || sessionId.value === 'undefined') return
@@ -289,7 +319,7 @@ async function treeEnter(item: any) {
 async function doAbort() { try { await abortSession(sessionId.value) } catch {} }
 
 watch(() => timeline.value.length, scrollToBottom)
-onMounted(async () => { await refresh(); connectWs() })
+onMounted(async () => { await refresh(); if (!isArchived.value) connectWs() })
 onUnmounted(() => { if (ws.value) try { ws.value.close() } catch {} })
 
 const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
@@ -313,20 +343,39 @@ const composedAt = computed(() => {
         <h1 class="session-title">{{ session?.title || '未命名会话' }}</h1>
       </div>
       <div class="topbar-status">
-        <span class="status-pill" :class="{ live: isStreaming }">
+        <span v-if="isArchived" class="status-pill archived-pill">
+          <span class="status-dot archived"></span>
+          <span>已归档</span>
+        </span>
+        <span v-else class="status-pill" :class="{ live: isStreaming }">
           <span v-if="isStreaming" class="live-dot"></span>
           <span v-else class="status-dot idle"></span>
           <span>{{ isStreaming ? '生成中' : '空闲' }}</span>
         </span>
-        <button class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
+        <button v-if="!isArchived" class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
           中断
         </button>
       </div>
     </header>
 
     <main class="messages" ref="messagesEl">
+      <!-- Archived session: locked -->
+      <div v-if="isArchived" class="archived-block blur-in">
+        <div class="archived-message card">
+          <span class="archived-icon">—</span>
+          <h2 class="archived-title">此会话<strong>已归档</strong></h2>
+          <p class="archived-sub">
+            处于归档状态的会话不可发送新消息。<br />
+            点击下方按钮恢复后可继续对话，历史消息将重新加载。
+          </p>
+          <button class="btn-primary" :disabled="restoringArchive" @click="restoreFromArchive">
+            {{ restoringArchive ? '正在恢复…' : '恢复会话' }}
+          </button>
+        </div>
+      </div>
+
       <!-- Welcome -->
-      <div v-if="!turnLog.length && !timeline.length" class="welcome fade-up">
+      <div v-else-if="!turnLog.length && !timeline.length" class="welcome fade-up">
         <span class="tag">工作室 · Workshop</span>
         <h2 class="welcome-title">
           一张<br />
@@ -455,8 +504,8 @@ const composedAt = computed(() => {
       </div>
     </main>
 
-    <!-- Composer — flat with pill primary CTA -->
-    <footer class="composer">
+    <!-- Composer — hidden for archived sessions -->
+    <footer v-if="!isArchived" class="composer">
       <textarea
         v-model="input"
         class="composer-input field-raw"
@@ -552,8 +601,58 @@ const composedAt = computed(() => {
   width: 6px; height: 6px; border-radius: 50%;
   background: var(--ink-faint);
 }
+.status-pill .status-dot.archived {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn);
+}
+.status-pill.archived-pill {
+  border-color: var(--warn);
+  color: var(--warn);
+  background: var(--warn-soft);
+}
 .status-pill.live { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
 .abort-btn { padding: 4px 12px; font-size: 11px; }
+
+/* ====================================================================
+   Archived block
+   ==================================================================== */
+.archived-block {
+  padding: 64px 0;
+  display: flex;
+  justify-content: center;
+}
+.archived-message {
+  padding: 48px 40px;
+  text-align: center;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.archived-icon {
+  font-size: 56px;
+  color: var(--ink-faint);
+  line-height: 1;
+}
+.archived-title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--ink);
+  letter-spacing: -0.02em;
+}
+.archived-title strong { color: var(--warn); font-weight: 700; }
+.archived-sub {
+  font-size: 14px;
+  color: var(--ink-2);
+  line-height: 1.7;
+  margin: 0;
+}
+.archived-message .btn-primary {
+  margin-top: 12px;
+  padding: 12px 28px;
+}
 
 /* ====================================================================
    Messages
