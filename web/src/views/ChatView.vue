@@ -199,7 +199,7 @@ const ws = ref<WebSocket | null>(null)
 function scrollToBottom() { nextTick(() => { if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight }) }
 
 async function send() {
-  if (!input.value.trim() || sending.value) return
+  if (!input.value.trim() || sending.value || isStreaming.value) return
   const text = input.value; input.value = ''; sending.value = true
   turnLog.value.push({ role: 'user', timeline: [], userText: text })
   timeline.value = []; itemOrder = 0
@@ -306,12 +306,16 @@ const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
     <!-- Composer -->
     <footer class="composer">
       <div class="composer-card">
-        <textarea v-model="input" class="composer-input mono" rows="3" placeholder="描述你的需求…"
-                  @keydown.enter.exact.prevent="send" :disabled="sending" />
+        <textarea v-model="input" class="composer-input mono" rows="3"
+                  :placeholder="isStreaming ? '代理正在生成，请稍候…' : '描述你的需求…'"
+                  @keydown.enter.exact.prevent="send" :disabled="sending || isStreaming" />
         <div class="composer-foot">
-          <span class="serial dim">↵ 发送 · ⇧↵ 换行 · {{ input.length }} 字符</span>
-          <button class="btn-primary" :disabled="sending || !input.trim()" @click="send">
-            {{ sending ? '提交中…' : '发送' }}
+          <span class="serial dim">
+            <template v-if="isStreaming">⏳ 等待代理回复 · 可点击「中断」打断</template>
+            <template v-else>↵ 发送 · ⇧↵ 换行 · {{ input.length }} 字符</template>
+          </span>
+          <button class="btn-primary" :disabled="sending || isStreaming || !input.trim()" @click="send">
+            {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}
           </button>
         </div>
       </div>
