@@ -17,6 +17,16 @@ export async function createRepo(repoId: string, displayName?: string): Promise<
   return r.data
 }
 
+export async function copyRepo(sourceRepoId: string, targetRepoId: string, displayName?: string): Promise<Repo> {
+  const r = await api.post(`/api/repos/${sourceRepoId}/copy`, { targetRepoId, displayName })
+  return r.data
+}
+
+export async function deleteRepo(repoId: string): Promise<{ ok: boolean; repoId: string }> {
+  const r = await api.delete(`/api/repos/${repoId}`)
+  return r.data
+}
+
 export async function listFiles(repoId: string): Promise<string[]> {
   const r = await api.get(`/api/repos/${repoId}/files`)
   return r.data

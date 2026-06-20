@@ -12,9 +12,11 @@ public interface ResponseAuditRepository extends JpaRepository<ResponseAudit, Lo
             SELECT r FROM ResponseAudit r
             WHERE (:sessionId IS NULL OR r.sessionId = :sessionId)
               AND (:userId IS NULL OR r.userId = :userId)
+              AND (:tenantId IS NULL OR r.tenantId = :tenantId)
             ORDER BY r.finishedAt DESC
             """)
     Page<ResponseAudit> search(@Param("sessionId") String sessionId,
                                @Param("userId") Long userId,
+                               @Param("tenantId") Long tenantId,
                                Pageable pageable);
 }

@@ -5,7 +5,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yourorg.omp.config.OmpProperties;
 import com.yourorg.omp.entity.AdminConfig;
+import com.yourorg.omp.entity.ModelConfigEntity;
 import com.yourorg.omp.repo.AdminConfigRepository;
+import com.yourorg.omp.repo.ModelConfigRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +22,13 @@ import java.util.Optional;
  *
  * <p>Changes apply to <strong>newly spawned</strong> omp processes; running processes need an explicit
  * {@code POST /admin/sessions/{id}/reload} to pick up the new values.
+ *
+ * <p>Model configuration resolution order:
+ * <ol>
+ *   <li>{@code admin_config.model.active} — legacy hot-override key (highest priority)</li>
+ *   <li>{@code model_config} table — active row determined by {@code active = true}</li>
+ *   <li>{@link OmpProperties} — application.yml defaults (lowest priority)</li>
+ * </ol>
  */
 @Service
 public class AdminConfigService {
@@ -36,11 +45,13 @@ public class AdminConfigService {
     public static final String KEY_VAULT_API_KEY = "vault.apiKey";
 
     private final AdminConfigRepository repo;
+    private final ModelConfigRepository modelConfigRepo;
     private final OmpProperties props;
     private final ObjectMapper mapper = new ObjectMapper();
 
-    public AdminConfigService(AdminConfigRepository repo, OmpProperties props) {
+    public AdminConfigService(AdminConfigRepository repo, ModelConfigRepository modelConfigRepo, OmpProperties props) {
         this.repo = repo;
+        this.modelConfigRepo = modelConfigRepo;
         this.props = props;
     }
 
@@ -84,9 +95,18 @@ public class AdminConfigService {
     }
 
     public Optional<String> apiKey() {
-        // vault.apiKey is deprecated; prefer model.active.apiKey (primary source of truth)
+        // 1. vault.apiKey 显式配置（已弃用，但保持向后兼容）
+        // 2. model.active.apiKey（主数据源 — admin_config）
+        // 3. model_config.active.apiKey（新表）
+        // 4. application.yml vault.api-key（最后回退）
+
+        // Step 1+2: model.active.apiKey
         Optional<String> fromModel = modelConfig().map(ModelConfig::apiKey).filter(s -> s != null && !s.isBlank());
         if (fromModel.isPresent()) return fromModel;
+
+        // Step 3: model_config.active.apiKey（如果 modelConfig() 已经读了新表，这里不会重复）
+        // modelConfig() 已包含新表回退，所以 fromModel 已经覆盖了 model_config.active
+
         Optional<String> fromDb = repo.findById(KEY_VAULT_API_KEY).flatMap(c -> {
             try {
                 JsonNode n = mapper.readTree(c.getConfigValue());
@@ -99,9 +119,10 @@ public class AdminConfigService {
         return fromDb.or(() -> Optional.ofNullable(props.vault().apiKey()).filter(s -> !s.isBlank()));
     }
 
-    /** Read full model.active node — provider/modelId/baseUrl. */
+    /** Read full model.active node — provider/modelId/baseUrl. Falls back to model_config table. */
     public java.util.Optional<ModelConfig> modelConfig() {
-        return getJson(KEY_MODEL_ACTIVE).map(node -> {
+        // 1. 优先从 admin_config 中的 model.active 读取（热覆盖，向后兼容）
+        Optional<ModelConfig> fromAdmin = getJson(KEY_MODEL_ACTIVE).map(node -> {
             String provider = node.path("provider").asText(null);
             String modelId = node.path("modelId").asText(null);
             String baseUrl = node.path("baseUrl").asText(null);
@@ -109,6 +130,12 @@ public class AdminConfigService {
             String apiKey = node.path("apiKey").asText(null);
             return new ModelConfig(provider, modelId, baseUrl, api, apiKey);
         });
+        if (fromAdmin.isPresent()) return fromAdmin;
+
+        // 2. 从新表 model_config 读取活跃配置
+        Optional<ModelConfigEntity> active = modelConfigRepo.findByActiveTrue();
+        return active.map(e -> new ModelConfig(e.getProvider(), e.getModelId(),
+                e.getBaseUrl(), e.getApi(), e.getApiKey()));
     }
 
     public record ModelConfig(String provider, String modelId, String baseUrl, String api, String apiKey) {}

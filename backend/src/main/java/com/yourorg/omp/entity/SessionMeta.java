@@ -17,6 +17,9 @@ public class SessionMeta {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Column(name = "tenant_id")
+    private Long tenantId;
+
     @Column(name = "repo_id", nullable = false, length = 128)
     private String repoId;
 
@@ -53,6 +56,8 @@ public class SessionMeta {
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
+    public Long getTenantId() { return tenantId; }
+    public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public String getRepoId() { return repoId; }
     public void setRepoId(String repoId) { this.repoId = repoId; }
     public String getOmpSessionFile() { return ompSessionFile; }

@@ -10,12 +10,17 @@ import com.yourorg.omp.repo.SessionMetaRepository;
 import com.yourorg.omp.repo.ToolAuditRepository;
 import com.yourorg.omp.repo.UserRepository;
 import com.yourorg.omp.security.JwtService;
+import com.yourorg.omp.security.CurrentUser;
 import com.yourorg.omp.entity.User;
 import com.yourorg.omp.session.SessionManager;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -32,11 +37,13 @@ public class AdminController {
     private final ToolAuditRepository tools;
     private final ResponseAuditRepository responses;
     private final AuditService audit;
+    private final CurrentUser currentUser;
 
     public AdminController(AdminConfigService config, UserRepository users, JwtService jwt,
                            SessionMetaRepository sessions, SessionManager sessionManager, ProcessPool pool,
                            PromptAuditRepository prompts, ToolAuditRepository tools,
-                           ResponseAuditRepository responses, AuditService audit) {
+                           ResponseAuditRepository responses, AuditService audit,
+                           CurrentUser currentUser) {
         this.config = config;
         this.users = users;
         this.jwt = jwt;
@@ -47,6 +54,7 @@ public class AdminController {
         this.tools = tools;
         this.responses = responses;
         this.audit = audit;
+        this.currentUser = currentUser;
     }
 
     // ---- config ----
@@ -76,7 +84,10 @@ public class AdminController {
 
     @GetMapping("/users")
     public Object listUsers() {
-        return users.findAll().stream().map(u -> Map.of(
+        Long tenantId = currentUser.scope().tenantId();
+        return users.findAll().stream()
+                .filter(u -> tenantId == null || tenantId.equals(u.getTenantId()))
+                .map(u -> Map.of(
                 "id", u.getId(),
                 "username", u.getUsername(),
                 "role", u.getRole(),
@@ -115,8 +126,13 @@ public class AdminController {
     // ---- sessions ----
 
     @GetMapping("/sessions")
-    public Object listSessions() {
-        return sessions.findAll().stream().map(m -> {
+    public Object listSessions(@RequestParam(defaultValue = "0") int page,
+                               @RequestParam(defaultValue = "20") int size) {
+        Page<com.yourorg.omp.entity.SessionMeta> p = sessions.findScopedPaged(
+                currentUser.scope().userId(),
+                currentUser.scope().tenantId(),
+                PageRequest.of(page, size));
+        List<Map<String, Object>> items = p.getContent().stream().map(m -> {
             // processAlive reflects the live OmpRpcClient in ProcessPool (not the DB column).
             // effectiveStatus prefers the live state for admin visibility, then falls back to DB.
             // DB status is kept untouched so archive/unarchive flows still see the persisted value.
@@ -133,6 +149,12 @@ public class AdminController {
                     "lastActiveAt", m.getLastActiveAt() == null ? null : m.getLastActiveAt().toString()
             );
         }).toList();
+        return Map.of(
+                "items", items,
+                "total", p.getTotalElements(),
+                "page", p.getNumber(),
+                "size", p.getSize()
+        );
     }
 
     @PostMapping("/sessions/{id}/kill")
@@ -157,12 +179,86 @@ public class AdminController {
 
     // ---- audit ----
 
+    /** Unified audit API: merges prompts, tools, responses into one paged list sorted by time. */
+    @GetMapping("/audit")
+    public Object auditUnified(@RequestParam(required = false) String sessionId,
+                               @RequestParam(defaultValue = "0") int page,
+                               @RequestParam(defaultValue = "50") int size) {
+        Long tenantId = currentUser.scope().tenantId();
+
+        // Fetch enough data from each table for merging (memory-based approach)
+        int fetchSize = Math.max(size * 3, 100);
+        List<com.yourorg.omp.entity.PromptAudit> pList = prompts.search(sessionId, null, tenantId,
+                PageRequest.of(0, fetchSize)).getContent();
+        List<com.yourorg.omp.entity.ToolAudit> tList = tools.search(sessionId, null, tenantId, null,
+                PageRequest.of(0, fetchSize)).getContent();
+        List<com.yourorg.omp.entity.ResponseAudit> rList = responses.search(sessionId, null, tenantId,
+                PageRequest.of(0, fetchSize)).getContent();
+
+        // Merge into unified structure
+        List<Map<String, Object>> all = new ArrayList<>();
+        for (com.yourorg.omp.entity.PromptAudit p : pList) {
+            all.add(Map.<String, Object>of(
+                    "_type", "prompt",
+                    "_time", p.getSentAt(),
+                    "id", p.getId(),
+                    "sessionId", p.getSessionId(),
+                    "userId", p.getUserId(),
+                    "promptText", p.getPromptText() == null ? "" : p.getPromptText()
+            ));
+        }
+        for (com.yourorg.omp.entity.ToolAudit t : tList) {
+            all.add(Map.<String, Object>of(
+                    "_type", "tool",
+                    "_time", t.getStartedAt(),
+                    "id", t.getId(),
+                    "sessionId", t.getSessionId(),
+                    "userId", t.getUserId(),
+                    "toolName", t.getToolName(),
+                    "arguments", t.getArguments() == null ? "" : t.getArguments(),
+                    "isError", t.isError()
+            ));
+        }
+        for (com.yourorg.omp.entity.ResponseAudit r : rList) {
+            all.add(Map.<String, Object>of(
+                    "_type", "response",
+                    "_time", r.getFinishedAt(),
+                    "id", r.getId(),
+                    "sessionId", r.getSessionId(),
+                    "userId", r.getUserId(),
+                    "fullText", r.getFullText() == null ? "" : r.getFullText(),
+                    "isError", r.isError(),
+                    "stopReason", r.getStopReason() == null ? "" : r.getStopReason()
+            ));
+        }
+
+        // Sort by time descending
+        all.sort((a, b) -> {
+            Instant ta = (Instant) a.get("_time");
+            Instant tb = (Instant) b.get("_time");
+            return tb.compareTo(ta);
+        });
+
+        // Manual pagination
+        int from = page * size;
+        int to = Math.min(from + size, all.size());
+        List<Map<String, Object>> items = from < all.size() ? all.subList(from, to) : List.of();
+
+        return Map.of(
+                "items", items,
+                "total", all.size(),
+                "page", page,
+                "size", size
+        );
+    }
+
     @GetMapping("/audit/prompts")
     public Object auditPrompts(@RequestParam(required = false) String sessionId,
                                @RequestParam(required = false) Long userId,
                                @RequestParam(defaultValue = "0") int page,
                                @RequestParam(defaultValue = "50") int size) {
-        return prompts.search(sessionId, userId, PageRequest.of(page, size)).getContent();
+        return prompts.search(sessionId, userId, currentUser.scope().tenantId(),
+                PageRequest.of(page, size)).getContent();
     }
 
     @GetMapping("/audit/tools")
@@ -171,7 +267,8 @@ public class AdminController {
                              @RequestParam(required = false) String toolName,
                              @RequestParam(defaultValue = "0") int page,
                              @RequestParam(defaultValue = "50") int size) {
-        return tools.search(sessionId, userId, toolName, PageRequest.of(page, size)).getContent();
+        return tools.search(sessionId, userId, currentUser.scope().tenantId(), toolName,
+                PageRequest.of(page, size)).getContent();
     }
 
     @GetMapping("/audit/responses")
@@ -179,7 +276,8 @@ public class AdminController {
                                  @RequestParam(required = false) Long userId,
                                  @RequestParam(defaultValue = "0") int page,
                                  @RequestParam(defaultValue = "50") int size) {
-        return responses.search(sessionId, userId, PageRequest.of(page, size)).getContent();
+        return responses.search(sessionId, userId, currentUser.scope().tenantId(),
+                PageRequest.of(page, size)).getContent();
     }
 
     // ---- pool stats ----

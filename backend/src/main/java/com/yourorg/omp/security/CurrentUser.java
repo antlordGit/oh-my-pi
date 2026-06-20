@@ -27,4 +27,9 @@ public class CurrentUser {
     public Long requireId() {
         return require().getId();
     }
+
+    /** 返回当前用户的数据查询范围（三级隔离）。 */
+    public DataScope scope() {
+        return DataScope.of(require());
+    }
 }

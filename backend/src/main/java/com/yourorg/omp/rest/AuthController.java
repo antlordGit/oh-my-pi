@@ -32,7 +32,7 @@ public class AuthController {
     }
 
     public record LoginRequest(@NotBlank String username, @NotBlank String password) {}
-    public record LoginResponse(String token, long expiresInSeconds, String username, String role) {}
+    public record LoginResponse(String token, long expiresInSeconds, String username, String role, String identityLevel, Long tenantId) {}
 
     @PostMapping("/login")
     public LoginResponse login(@RequestBody LoginRequest req) {
@@ -45,7 +45,7 @@ public class AuthController {
         u.setLastLoginAt(Instant.now());
         users.save(u);
         String token = jwt.issue(u);
-        return new LoginResponse(token, 24 * 3600, u.getUsername(), u.getRole());
+        return new LoginResponse(token, 24 * 3600, u.getUsername(), u.getRole(), u.getIdentityLevel(), u.getTenantId());
     }
 
     @GetMapping("/me")
@@ -54,7 +54,9 @@ public class AuthController {
         return Map.of(
                 "id", u.getId(),
                 "username", u.getUsername(),
-                "role", u.getRole()
+                "role", u.getRole(),
+                "identityLevel", u.getIdentityLevel(),
+                "tenantId", u.getTenantId()
         );
     }
 }

@@ -17,6 +17,9 @@ public class ResponseAudit {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Column(name = "tenant_id")
+    private Long tenantId;
+
     @Column(name = "message_id", length = 128)
     private String messageId;
 
@@ -42,6 +45,8 @@ public class ResponseAudit {
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
+    public Long getTenantId() { return tenantId; }
+    public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public String getMessageId() { return messageId; }
     public void setMessageId(String messageId) { this.messageId = messageId; }
     public String getFullText() { return fullText; }

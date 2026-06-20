@@ -1,6 +1,8 @@
 package com.yourorg.omp.workspace;
 
 import com.yourorg.omp.config.OmpProperties;
+import com.yourorg.omp.entity.User;
+import com.yourorg.omp.repo.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -12,19 +14,23 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 /**
  * Owns on-disk layout for user code and per-user omp state.
  *
  * <pre>
- *   {workspacesRoot}/{userId}/{repoId}/         ← user code (git-initialized)
- *   {agentRoot}/{userId}/                       ← PI_CODING_AGENT_DIR
- *   {agentRoot}/{userId}/sessions/...           ← omp's JSONL session files
+ *   {workspacesRoot}/{username}/{repoId}/         ← user code (git-initialized)
+ *   {agentRoot}/{username}/                       ← PI_CODING_AGENT_DIR
+ *   {agentRoot}/{username}/sessions/...           ← omp's JSONL session files
  * </pre>
  *
  * <p>Repo directories are auto-created and git-initialized on first access. Git is the source of truth
  * for file-level history; session JSONL is the source of truth for conversation history.
+ *
+ * <p>Both {@code username} and {@code repoId} are validated before path construction to prevent
+ * directory traversal attacks. Only alphanumeric characters and hyphens are allowed.
  */
 @Service
 public class WorkspaceService {
@@ -33,10 +39,15 @@ public class WorkspaceService {
     private static final String GIT_AUTHOR_NAME = "omp";
     private static final String GIT_AUTHOR_EMAIL = "omp@system.local";
 
-    private final OmpProperties props;
+    /** Path-safe identifier pattern: alphanumeric and hyphen only. */
+    private static final Pattern PATH_ID_PATTERN = Pattern.compile("^[A-Za-z0-9-]+$");
 
-    public WorkspaceService(OmpProperties props) {
+    private final OmpProperties props;
+    private final UserRepository users;
+
+    public WorkspaceService(OmpProperties props, UserRepository users) {
         this.props = props;
+        this.users = users;
         try {
             Files.createDirectories(props.workspacesRoot());
             Files.createDirectories(props.agentRoot());
@@ -45,8 +56,43 @@ public class WorkspaceService {
         }
     }
 
+    /**
+     * Resolve a userId to its username, validating the username for path safety.
+     * This prevents directory traversal even if the database contains malformed usernames.
+     */
+    private String resolveUsername(Long userId) {
+        User user = users.findById(userId)
+                .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
+        String username = user.getUsername();
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException("User has no username: " + userId);
+        }
+        if (!PATH_ID_PATTERN.matcher(username).matches()) {
+            throw new IllegalArgumentException("Username contains invalid characters: " + username);
+        }
+        return username;
+    }
+
+    /**
+     * Validate repoId format before using it in path construction.
+     * Allows alphanumeric and hyphen only, max 32 characters.
+     */
+    private void validateRepoId(String repoId) {
+        if (repoId == null || repoId.isBlank()) {
+            throw new IllegalArgumentException("repoId required");
+        }
+        if (repoId.length() > 32) {
+            throw new IllegalArgumentException("repoId exceeds 32 characters");
+        }
+        if (!PATH_ID_PATTERN.matcher(repoId).matches()) {
+            throw new IllegalArgumentException("repoId contains invalid characters: " + repoId);
+        }
+    }
+
     public Path userWorkspace(Long userId, String repoId) {
-        Path p = props.workspacesRoot().resolve(String.valueOf(userId)).resolve(repoId);
+        String username = resolveUsername(userId);
+        validateRepoId(repoId);
+        Path p = props.workspacesRoot().resolve(username).resolve(repoId);
         try {
             Files.createDirectories(p);
             initGitIfNeeded(p);
@@ -58,7 +104,8 @@ public class WorkspaceService {
     }
 
     public Path userAgentDir(Long userId) {
-        Path p = props.agentRoot().resolve(String.valueOf(userId));
+        String username = resolveUsername(userId);
+        Path p = props.agentRoot().resolve(username);
         try {
             Files.createDirectories(p);
             seedModelsConfig(p);
@@ -216,6 +263,92 @@ public class WorkspaceService {
     public String log(Long userId, String repoId, int n) {
         Path root = userWorkspace(userId, repoId);
         return runGitCapture(root, "log", "--oneline", "-n", String.valueOf(n));
+    }
+
+    /**
+     * Copy an entire workspace directory to a new repoId under the same user.
+     * Copies all files including hidden files and subdirectories, excluding .git.
+     * The target repo is git-initialized after copy.
+     *
+     * @param userId        the user who owns the repo
+     * @param sourceRepoId  the repo to copy from
+     * @param targetRepoId  the new repo identifier (must pass validation)
+     * @return the path to the new workspace
+     */
+    public Path copyWorkspace(Long userId, String sourceRepoId, String targetRepoId) {
+        validateRepoId(targetRepoId);
+        String username = resolveUsername(userId);
+        Path source = props.workspacesRoot().resolve(username).resolve(sourceRepoId);
+        Path target = props.workspacesRoot().resolve(username).resolve(targetRepoId);
+
+        if (!Files.exists(source)) {
+            throw new IllegalArgumentException("源仓库不存在: " + sourceRepoId);
+        }
+        if (Files.exists(target)) {
+            throw new IllegalArgumentException("目标仓库已存在: " + targetRepoId);
+        }
+
+        try {
+            // Copy all files including hidden files, excluding .git directory
+            Files.walk(source).forEach(src -> {
+                Path rel = source.relativize(src);
+                Path dst = target.resolve(rel);
+                // Skip .git directory
+                if (rel.startsWith(".git")) return;
+                try {
+                    if (Files.isDirectory(src)) {
+                        Files.createDirectories(dst);
+                    } else {
+                        Files.createDirectories(dst.getParent());
+                        Files.copy(src, dst, StandardCopyOption.COPY_ATTRIBUTES);
+                    }
+                } catch (IOException e) {
+                    throw new RuntimeException("Failed to copy: " + src, e);
+                }
+            });
+
+            // Initialize git in the new repo
+            initGitIfNeeded(target);
+            log.info("Copied workspace {} -> {} for user {}", sourceRepoId, targetRepoId, userId);
+            return target;
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to copy workspace", e);
+        }
+    }
+
+    /**
+     * Delete a workspace directory and its database record.
+     * This operation is irreversible.
+     *
+     * @param userId the user who owns the repo
+     * @param repoId the repo to delete
+     */
+    public void deleteWorkspace(Long userId, String repoId) {
+        String username = resolveUsername(userId);
+        Path target = props.workspacesRoot().resolve(username).resolve(repoId);
+
+        if (!Files.exists(target)) {
+            throw new IllegalArgumentException("仓库不存在: " + repoId);
+        }
+
+        try {
+            // Recursively delete the directory
+            try (Stream<Path> walk = Files.walk(target)) {
+                walk.sorted((a, b) -> -a.compareTo(b)) // Delete files before directories
+                    .forEach(p -> {
+                        try {
+                            Files.delete(p);
+                        } catch (IOException e) {
+                            throw new RuntimeException("Failed to delete: " + p, e);
+                        }
+                    });
+            }
+            log.info("Deleted workspace {} for user {}", repoId, userId);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to delete workspace", e);
+        }
     }
 
     /**

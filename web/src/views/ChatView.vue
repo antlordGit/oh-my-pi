@@ -633,23 +633,24 @@ const composedAt = computed(() => {
         class="composer-input field-raw"
         rows="3"
         :placeholder="isStreaming ? '正在生成中，可继续输入，生成完成后将自动发送…' : '在此描述你的需求，代理将在沙箱中执行…'"
-        @keydown.enter.exact.prevent="send"
+        @keydown.enter.ctrl.prevent="send"
+        @keydown.enter.meta.prevent="send"
         :disabled="sending"
       />
       <div class="composer-foot">
         <div class="composer-hints">
           <span class="hint">
-            <span class="kbd">↵</span>
+            <span class="kbd">⌘/Ctrl ↵</span>
             <span class="serial">发送</span>
           </span>
           <span class="hint">
-            <span class="kbd">⇧↵</span>
+            <span class="kbd">↵</span>
             <span class="serial">换行</span>
           </span>
           <span class="serial dim">{{ composedAt }} · {{ input.length }} 字符</span>
         </div>
         <button class="btn-primary send-btn" :disabled="sending || isStreaming || !input.trim()" @click="send">
-          {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送给代理') }}
+          {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}
         </button>
       </div>
     </footer>

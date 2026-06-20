@@ -17,6 +17,9 @@ public class ToolAudit {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Column(name = "tenant_id")
+    private Long tenantId;
+
     @Column(name = "tool_call_id", nullable = false, length = 128)
     private String toolCallId;
 
@@ -43,6 +46,8 @@ public class ToolAudit {
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
+    public Long getTenantId() { return tenantId; }
+    public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public String getToolCallId() { return toolCallId; }
     public void setToolCallId(String toolCallId) { this.toolCallId = toolCallId; }
     public String getToolName() { return toolName; }

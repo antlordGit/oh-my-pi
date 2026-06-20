@@ -2,13 +2,14 @@
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { listSessions, createSession, archive, unarchive, type SessionSummary } from '@/api/session'
-import { listRepos, createRepo, type Repo } from '@/api/repo'
+import { listRepos, createRepo, copyRepo, deleteRepo, type Repo } from '@/api/repo'
 
 const router = useRouter()
 const auth = useAuthStore()
 const msg = useMessage()
+const dialog = useDialog()
 
 const sessions = ref<SessionSummary[]>([])
 const repos = ref<Repo[]>([])
@@ -20,6 +21,13 @@ const newRepoName = ref('')
 const newSessionRepo = ref<string>('')
 const newSessionTitle = ref('')
 const showCreator = ref(false)
+const showRepoManager = ref(false)
+
+// Copy repo modal state
+const copySourceRepo = ref<string>('')
+const copyTargetRepoId = ref('')
+const copyDisplayName = ref('')
+const showCopyModal = ref(false)
 
 const filteredSessions = computed(() =>
   filter.value === 'all' ? sessions.value : sessions.value.filter(s => s.status === filter.value),
@@ -63,6 +71,41 @@ async function onCreateSession() {
     newSessionTitle.value = ''; showCreator.value = false
     router.push(`/sessions/${s.sessionId}`)
   } catch (e: any) { msg.error(e?.response?.data?.error || '创建失败') }
+}
+
+// Repo copy/delete handlers
+function openCopyModal(repoId: string) {
+  copySourceRepo.value = repoId
+  copyTargetRepoId.value = repoId + '-copy'
+  copyDisplayName.value = ''
+  showCopyModal.value = true
+}
+
+async function doCopyRepo() {
+  if (!copyTargetRepoId.value) return msg.warning('请输入目标仓库标识')
+  try {
+    await copyRepo(copySourceRepo.value, copyTargetRepoId.value, copyDisplayName.value || copyTargetRepoId.value)
+    msg.success('仓库已复制')
+    showCopyModal.value = false
+    await refresh()
+  } catch (e: any) { msg.error(e?.response?.data?.error || '复制失败') }
+}
+
+function confirmDeleteRepo(repoId: string, displayName: string) {
+  dialog.warning({
+    title: '确认删除',
+    content: `确定删除仓库「${displayName}」及其所有文件？此操作不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await deleteRepo(repoId)
+        msg.success('仓库已删除')
+        if (newSessionRepo.value === repoId) newSessionRepo.value = repos.value[0]?.repoId || ''
+        await refresh()
+      } catch (e: any) { msg.error(e?.response?.data?.error || '删除失败') }
+    }
+  })
 }
 
 const OVERRIDES_KEY = 'omp.admin.sessionOverrides'
@@ -113,41 +156,11 @@ function fmtDate(s?: string) {
   return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function logout() { auth.logout(); router.replace('/login') }
 onMounted(refresh)
 </script>
 
 <template>
   <div class="page">
-    <!-- Topbar (Volcengine split nav) -->
-    <header class="topbar fade-up">
-      <div class="brand">
-        <span class="brand-mark">
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none">
-            <path d="M4 20 L12 4 L20 20 L16 20 L12 12 L8 20 Z" fill="#165DFF"/>
-          </svg>
-        </span>
-        <span class="brand-name">OMP</span>
-      </div>
-
-      <div class="nav-search">
-        <span class="search-icon">⌕</span>
-        <input class="search-input" placeholder="搜索会话、仓库" />
-      </div>
-
-      <div class="nav-actions">
-        <span class="nav-user">
-          <span class="serial">{{ auth.username }}</span>
-          <span v-if="auth.isAdmin" class="tag" style="margin-left:8px">管理员</span>
-        </span>
-        <button v-if="auth.isAdmin" class="btn-ghost" @click="router.push('/admin')">控制室</button>
-        <button class="btn-ghost" @click="logout">登出</button>
-        <button class="btn-primary" @click="showCreator = !showCreator">
-          {{ showCreator ? '收起' : '新建会话' }}
-        </button>
-      </div>
-    </header>
-
     <!-- Hero stats — terminal instrumentation -->
     <section class="hero-stats-section fade-up" style="animation-delay:160ms">
       <div class="hero-stats">
@@ -205,6 +218,9 @@ onMounted(refresh)
       </button>
       <span class="dotline-fill"></span>
       <span class="serial">{{ filteredSessions.length }} 项</span>
+      <button class="btn-primary" @click="showCreator = !showCreator">
+        {{ showCreator ? '收起' : '新建会话' }}
+      </button>
     </div>
 
     <!-- Creator -->
@@ -214,9 +230,12 @@ onMounted(refresh)
           <div class="creator-card">
             <span class="tag">01 · 登记仓库</span>
             <h3 class="creator-title">登记一个<br /><strong>新仓库</strong></h3>
-            <input v-model="newRepoId" class="field-raw" placeholder="仓库标识（英文/数字）" />
+            <input v-model="newRepoId" class="field-raw" maxlength="32" placeholder="仓库标识（英文/数字/-，≤32位）" />
             <input v-model="newRepoName" class="field-raw" placeholder="显示名（可选）" />
-            <button class="btn-outline" :disabled="!newRepoId" @click="onCreateRepo">登记</button>
+            <div class="creator-actions">
+              <button class="btn-outline" :disabled="!newRepoId" @click="onCreateRepo">登记</button>
+              <button class="btn-ghost btn-sm" @click="showRepoManager = true">管理</button>
+            </div>
           </div>
           <div class="creator-card">
             <span class="tag green">02 · 开启会话</span>
@@ -232,6 +251,53 @@ onMounted(refresh)
           </div>
         </div>
       </section>
+    </transition>
+
+    <!-- Repo Manager Modal -->
+    <transition name="fade">
+      <div v-if="showRepoManager" class="modal-overlay" @click.self="showRepoManager = false">
+        <div class="modal card">
+          <div class="modal-header">
+            <h3>管理仓库</h3>
+            <button class="btn-ghost btn-sm" @click="showRepoManager = false">关闭</button>
+          </div>
+          <div class="modal-body">
+            <div v-if="!repos.length" class="empty-repos">暂无仓库</div>
+            <div v-else class="repo-list">
+              <div v-for="r in repos" :key="r.repoId" class="repo-item">
+                <div class="repo-info">
+                  <span class="repo-name">{{ r.displayName }}</span>
+                  <code class="repo-id">{{ r.repoId }}</code>
+                </div>
+                <div class="repo-actions">
+                  <button v-if="auth.isAdmin" class="btn-ghost btn-sm" @click="openCopyModal(r.repoId)">复制</button>
+                  <button v-if="auth.isAdmin" class="btn-mini-danger btn-sm" @click="confirmDeleteRepo(r.repoId, r.displayName)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- Copy Repo Modal -->
+    <transition name="fade">
+      <div v-if="showCopyModal" class="modal-overlay" @click.self="showCopyModal = false">
+        <div class="modal card">
+          <div class="modal-header">
+            <h3>复制仓库</h3>
+            <button class="btn-ghost btn-sm" @click="showCopyModal = false">取消</button>
+          </div>
+          <div class="modal-body">
+            <p class="modal-hint">将 <code>{{ copySourceRepo }}</code> 复制为新仓库：</p>
+            <input v-model="copyTargetRepoId" class="field-raw" maxlength="32" placeholder="新仓库标识（英文/数字/-，≤32位）" />
+            <input v-model="copyDisplayName" class="field-raw" placeholder="显示名（可选）" />
+            <div class="modal-actions">
+              <button class="btn-primary" :disabled="!copyTargetRepoId" @click="doCopyRepo">确认复制</button>
+            </div>
+          </div>
+        </div>
+      </div>
     </transition>
 
     <!-- Session list -->
@@ -290,70 +356,11 @@ onMounted(refresh)
 
 <style scoped>
 .page {
-  max-width: 1200px;
-  margin: 0 auto;
-  padding: 0 32px 80px;
+  padding: 24px 32px 80px;
   display: flex;
   flex-direction: column;
-  gap: 40px;
-}
-
-/* ====================================================================
-   Topbar
-   ==================================================================== */
-.topbar {
-  display: flex;
-  align-items: center;
   gap: 24px;
-  padding: 16px 0;
-  position: sticky;
-  top: 0;
-  background: rgba(255, 255, 255, 0.86);
-  backdrop-filter: saturate(180%) blur(16px);
-  -webkit-backdrop-filter: saturate(180%) blur(16px);
-  z-index: 10;
 }
-.brand { display: inline-flex; align-items: center; gap: 8px; }
-.brand-mark {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px; height: 32px;
-  background: rgba(22, 93, 255, 0.10);
-  border-radius: 8px;
-}
-.brand-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
-
-.nav-search {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
-  background: var(--surface-soft);
-  transition: border-color var(--dur-fast) var(--ease-out);
-}
-.nav-search:focus-within { border-color: var(--brand); background: var(--surface); }
-.search-icon { color: var(--ink-mute); font-size: 14px; }
-.search-input {
-  border: 0;
-  background: transparent;
-  outline: 0;
-  font-size: 13px;
-  width: 220px;
-  color: var(--ink);
-}
-.search-input::placeholder { color: var(--ink-mute); }
-
-.nav-actions {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 12px;
-}
-.nav-user { display: inline-flex; align-items: center; }
-.nav-user .serial { color: var(--ink-2); }
 
 /* ====================================================================
    Hero stats — instrumentation panel
@@ -559,6 +566,120 @@ onMounted(refresh)
 .creator-card .btn-outline,
 .creator-card .btn-primary { align-self: flex-start; margin-top: 4px; }
 
+.creator-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+}
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* ====================================================================
+   Modal
+   ==================================================================== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  width: 420px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.modal-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+.modal-hint {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+.modal-hint code {
+  background: var(--surface-soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.empty-repos {
+  text-align: center;
+  color: var(--ink-mute);
+  padding: 24px;
+}
+
+.repo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.repo-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px;
+  background: var(--surface-soft);
+  border-radius: var(--radius);
+}
+.repo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.repo-name {
+  font-weight: 500;
+  font-size: 14px;
+}
+.repo-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-mute);
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.repo-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.fade-enter-active, .fade-leave-active {
+  transition: opacity 200ms ease;
+}
+.fade-enter-from, .fade-leave-to {
+  opacity: 0;
+}
+
 .slide-down-enter-active, .slide-down-leave-active {
   transition: all 360ms var(--ease-out);
   overflow: hidden;
@@ -641,10 +762,7 @@ onMounted(refresh)
    Mobile
    ==================================================================== */
 @media (max-width: 900px) {
-  .page { padding: 0 16px 48px; }
-  .topbar { flex-wrap: wrap; gap: 12px; }
-  .nav-search { display: none; }
-  .nav-actions { margin-left: 0; width: 100%; justify-content: flex-end; }
+  .page { padding: 16px 16px 48px; }
   .hero-stats-section { padding: 16px 0 8px; }
   .creator-grid { grid-template-columns: 1fr; }
   .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }

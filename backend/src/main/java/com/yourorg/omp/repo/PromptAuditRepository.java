@@ -12,9 +12,11 @@ public interface PromptAuditRepository extends JpaRepository<PromptAudit, Long> 
             SELECT p FROM PromptAudit p
             WHERE (:sessionId IS NULL OR p.sessionId = :sessionId)
               AND (:userId IS NULL OR p.userId = :userId)
+              AND (:tenantId IS NULL OR p.tenantId = :tenantId)
             ORDER BY p.sentAt DESC
             """)
     Page<PromptAudit> search(@Param("sessionId") String sessionId,
                              @Param("userId") Long userId,
+                             @Param("tenantId") Long tenantId,
                              Pageable pageable);
 }

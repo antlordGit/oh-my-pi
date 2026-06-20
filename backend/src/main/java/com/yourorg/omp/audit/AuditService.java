@@ -149,6 +149,7 @@ public class AuditService {
         ResponseAudit r = new ResponseAudit();
         r.setSessionId(sessionId);
         r.setUserId(meta.getUserId());
+        r.setTenantId(meta.getTenantId());
         r.setMessageId(s.messageId != null ? s.messageId : msg.path("id").asText(null));
         r.setFullText(s.text.toString());
         r.setThinking(s.thinking.toString());
@@ -186,6 +187,7 @@ public class AuditService {
         ToolAudit t = new ToolAudit();
         t.setSessionId(sessionId);
         t.setUserId(meta.getUserId());
+        t.setTenantId(meta.getTenantId());
         t.setToolCallId(callId);
         t.setToolName(s.toolName);
         // Sanitize null/empty fields so MySQL TEXT accepts
@@ -226,10 +228,11 @@ public class AuditService {
     // -------- public write APIs (called from REST when user sends a prompt) --------
 
     @Transactional
-    public void recordPrompt(String sessionId, Long userId, String text, JsonNode imagesJson) {
+    public void recordPrompt(String sessionId, Long userId, Long tenantId, String text, JsonNode imagesJson) {
         PromptAudit p = new PromptAudit();
         p.setSessionId(sessionId);
         p.setUserId(userId);
+        p.setTenantId(tenantId);
         p.setPromptText(text);
         p.setPromptImagesJson(imagesJson != null && !imagesJson.isNull() ? imagesJson.toString() : null);
         promptRepo.save(p);

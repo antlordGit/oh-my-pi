@@ -65,8 +65,7 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
             socket.close(CloseStatus.NOT_ACCEPTABLE);
             return;
         }
-        Long uid = currentUser.requireId();
-        var meta = sessions.findOwned(sessionId, uid)
+        var meta = sessions.findScoped(sessionId, currentUser.scope())
                 .orElseThrow(() -> new IllegalStateException("Forbidden"));
         // Ensure the omp client is alive (spawn if needed) so EventBus starts receiving frames.
         sessions.acquireClient(meta);
@@ -120,8 +119,7 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
             return;
         }
         String sessionId = extractSessionId(socket.getUri());
-        Long uid = currentUser.requireId();
-        var meta = sessions.findOwned(sessionId, uid).orElse(null);
+        var meta = sessions.findScoped(sessionId, currentUser.scope()).orElse(null);
         if (meta == null) return;
         String type = frame.path("type").asText("");
         switch (type) {

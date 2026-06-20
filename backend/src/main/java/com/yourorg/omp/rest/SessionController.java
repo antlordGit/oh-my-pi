@@ -48,21 +48,22 @@ public class SessionController {
 
     @GetMapping
     public List<Map<String, Object>> list(@RequestParam(required = false) String repoId) {
-        Long uid = currentUser.requireId();
+        var scope = currentUser.scope();
         var list = repoId == null
-                ? sessions.listByUser(uid)
-                : sessions.listByUserAndRepo(uid, repoId);
+                ? sessions.listScoped(scope)
+                : sessions.listScopedByRepo(scope, repoId);
         return list.stream().map(this::toDto).toList();
     }
 
     @PostMapping
     public Map<String, Object> create(@RequestBody CreateSessionRequest req) {
-        Long uid = currentUser.requireId();
+        var self = currentUser.require();
+        Long uid = self.getId();
         long active = sessions.countActiveByUser(uid);
         if (active >= props.perUserSessionLimit()) {
             throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
         }
-        SessionMeta m = sessions.create(uid, req.repoId(), req.title());
+        SessionMeta m = sessions.create(uid, self.getTenantId(), req.repoId(), req.title());
         // Eagerly attach audit so the first events are captured.
         audit.attach(m.getSessionId());
         return toDto(m);
@@ -70,8 +71,7 @@ public class SessionController {
 
     @GetMapping("/{sessionId}")
     public Map<String, Object> get(@PathVariable String sessionId) {
-        Long uid = currentUser.requireId();
-        SessionMeta m = sessions.findOwned(sessionId, uid)
+        SessionMeta m = sessions.findScoped(sessionId, currentUser.scope())
                 .orElseThrow(() -> new RuntimeException("Session not found"));
         return toDto(m);
     }
@@ -100,7 +100,7 @@ public class SessionController {
             m.setStatus("active");
         }
         // Audit the prompt itself (audit-pipeline picks up streamed response events).
-        audit.recordPrompt(sessionId, m.getUserId(), req.message(), null);
+        audit.recordPrompt(sessionId, m.getUserId(), m.getTenantId(), req.message(), null);
         // Fire-and-forget: the response comes over WS, not this REST call.
         sessions.sendCommand(m, req.streamingBehavior() != null
                 ? RpcCommands.prompt(req.message(), req.streamingBehavior())
@@ -204,8 +204,8 @@ public class SessionController {
     }
 
     private SessionMeta require(String sessionId) {
-        Long uid = currentUser.requireId();
-        return sessions.findOwned(sessionId, uid).orElseThrow(() -> new RuntimeException("Session not found"));
+        return sessions.findScoped(sessionId, currentUser.scope())
+                .orElseThrow(() -> new RuntimeException("Session not found"));
     }
 
     private Map<String, Object> toDto(SessionMeta m) {

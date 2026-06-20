@@ -14,11 +14,20 @@ public class User {
     @Column(nullable = false, unique = true, length = 64)
     private String username;
 
+    @Column(length = 64)
+    private String name;
+
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
     @Column(nullable = false, length = 16)
     private String role = "user";
+
+    @Column(name = "identity_level", nullable = false, length = 16)
+    private String identityLevel = "user";
+
+    @Column(name = "tenant_id")
+    private Long tenantId;
 
     @Column(nullable = false)
     private boolean enabled = true;
@@ -33,15 +42,22 @@ public class User {
     public void setId(Long id) { this.id = id; }
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
     public String getPasswordHash() { return passwordHash; }
     public void setPasswordHash(String passwordHash) { this.passwordHash = passwordHash; }
     public String getRole() { return role; }
     public void setRole(String role) { this.role = role; }
+    public String getIdentityLevel() { return identityLevel; }
+    public void setIdentityLevel(String identityLevel) { this.identityLevel = identityLevel; }
+    public Long getTenantId() { return tenantId; }
+    public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getLastLoginAt() { return lastLoginAt; }
     public void setLastLoginAt(Instant lastLoginAt) { this.lastLoginAt = lastLoginAt; }
 
-    public boolean isAdmin() { return "admin".equals(role); }
+    public boolean isSuperAdmin() { return "super_admin".equals(identityLevel); }
+    public boolean isAdmin() { return "admin".equals(identityLevel) || isSuperAdmin(); }
 }

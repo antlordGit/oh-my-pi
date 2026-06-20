@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
@@ -39,9 +40,20 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             claims.ifPresent(c -> {
                 String username = c.getSubject();
                 String role = c.get("role", String.class);
+                String identityLevel = c.get("identityLevel", String.class);
+                List<SimpleGrantedAuthority> authorities = new ArrayList<>();
+                // base role 来自 User.role 字段（user/admin）
+                authorities.add(new SimpleGrantedAuthority("ROLE_" + (role == null ? "USER" : role.toUpperCase())));
+                // identityLevel 为 admin/super_admin 时也拥有 ADMIN 角色（满足 /admin、/system 路由守卫）
+                if ("admin".equals(identityLevel) || "super_admin".equals(identityLevel)) {
+                    authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+                }
+                // 超级管理员拥有额外权限
+                if ("super_admin".equals(identityLevel)) {
+                    authorities.add(new SimpleGrantedAuthority("ROLE_SUPER_ADMIN"));
+                }
                 var auth = new UsernamePasswordAuthenticationToken(
-                        username, null,
-                        List.of(new SimpleGrantedAuthority("ROLE_" + (role == null ? "USER" : role.toUpperCase()))));
+                        username, null, authorities);
                 auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(req));
                 SecurityContextHolder.getContext().setAuthentication(auth);
             });

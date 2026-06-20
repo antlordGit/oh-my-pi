@@ -8,6 +8,7 @@ import com.yourorg.omp.pool.ProcessPool;
 import com.yourorg.omp.repo.SessionMetaRepository;
 import com.yourorg.omp.rpc.OmpRpcClient;
 import com.yourorg.omp.rpc.RpcCommands;
+import com.yourorg.omp.security.DataScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -41,10 +42,11 @@ public class SessionManager {
 
     /** Create a new session record. Does NOT spawn a process — that happens on first prompt or state fetch. */
     @Transactional
-    public SessionMeta create(Long userId, String repoId, String title) {
+    public SessionMeta create(Long userId, Long tenantId, String repoId, String title) {
         SessionMeta m = new SessionMeta();
         m.setSessionId(UUID.randomUUID().toString());
         m.setUserId(userId);
+        m.setTenantId(tenantId);
         m.setRepoId(repoId);
         m.setTitle(title);
         m.setStatus("active");
@@ -58,6 +60,11 @@ public class SessionManager {
         return repo.findBySessionId(sessionId).filter(m -> m.getUserId().equals(userId));
     }
 
+    /** 按数据范围查找单个会话：普通用户限本人，管理员限本租户，超管不限。 */
+    public Optional<SessionMeta> findScoped(String sessionId, DataScope scope) {
+        return repo.findScopedBySessionId(sessionId, scope.userId(), scope.tenantId());
+    }
+
     public Optional<SessionMeta> find(String sessionId) {
         return repo.findBySessionId(sessionId);
     }
@@ -68,6 +75,16 @@ public class SessionManager {
 
     public List<SessionMeta> listByUserAndRepo(Long userId, String repoId) {
         return repo.findByUserIdAndRepoIdOrderByLastActiveAtDesc(userId, repoId);
+    }
+
+    /** 按数据范围列出会话。 */
+    public List<SessionMeta> listScoped(DataScope scope) {
+        return repo.findScoped(scope.userId(), scope.tenantId());
+    }
+
+    /** 按数据范围列出指定仓库的会话。 */
+    public List<SessionMeta> listScopedByRepo(DataScope scope, String repoId) {
+        return repo.findScopedByRepo(scope.userId(), scope.tenantId(), repoId);
     }
 
     /** Touch last_active_at; called after every prompt/abort/etc. */

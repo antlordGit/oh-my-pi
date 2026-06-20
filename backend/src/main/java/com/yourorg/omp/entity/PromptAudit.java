@@ -17,6 +17,9 @@ public class PromptAudit {
     @Column(name = "user_id", nullable = false)
     private Long userId;
 
+    @Column(name = "tenant_id")
+    private Long tenantId;
+
     @Lob
     @Column(name = "prompt_text", columnDefinition = "MEDIUMTEXT")
     private String promptText;
@@ -32,6 +35,8 @@ public class PromptAudit {
     public void setSessionId(String sessionId) { this.sessionId = sessionId; }
     public Long getUserId() { return userId; }
     public void setUserId(Long userId) { this.userId = userId; }
+    public Long getTenantId() { return tenantId; }
+    public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public String getPromptText() { return promptText; }
     public void setPromptText(String promptText) { this.promptText = promptText; }
     public String getPromptImagesJson() { return promptImagesJson; }
