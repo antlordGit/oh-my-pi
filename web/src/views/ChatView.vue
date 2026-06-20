@@ -42,19 +42,78 @@ async function refresh() {
       const messages = await getMessages(sessionId.value)
       history.value = messages.messages || []
       turnLog.value = []
+      // 索引 toolCall 的结果，方便后面合并
+      const toolResults: Record<string, { result: any; error: boolean }> = {}
       for (const m of (messages.messages || [])) {
-        if (m.role === 'user') {
-          turnLog.value.push({ role: 'user', timeline: [], userText: extractText(m.content) })
-        } else {
-          const timeline = buildTimeline(m.content)
-          if (timeline.length > 0) {
-            turnLog.value.push({ role: 'assistant', timeline })
-          }
+        if (m.role === 'tool' || m.role === 'toolResult') {
+          // 收集 tool 结果，附加到对应 toolCall
+          collectToolResults(m.content, toolResults)
         }
       }
-    } catch {}
+      // 合并连续的 assistant + tool 消息为同一个 turn
+      let currentAssistantTimeline: TimelineItem[] | null = null
+      let order = 0
+      const flush = () => {
+        if (currentAssistantTimeline && currentAssistantTimeline.length > 0) {
+          turnLog.value.push({ role: 'assistant', timeline: currentAssistantTimeline })
+        }
+        currentAssistantTimeline = null
+      }
+      for (const m of (messages.messages || [])) {
+        if (m.role === 'user') {
+          flush()
+          turnLog.value.push({ role: 'user', timeline: [], userText: extractText(m.content) })
+          order = 0
+        } else if (m.role === 'assistant') {
+          if (!currentAssistantTimeline) currentAssistantTimeline = []
+          appendToTimeline(currentAssistantTimeline, m.content, toolResults, () => order++)
+        }
+        // 'tool' / 'toolResult' 已经合并到上面 toolCall 的 result，跳过
+      }
+      flush()
+    } catch (e) {
+      console.error('refresh failed', e)
+    }
     try { state.value = await getState(sessionId.value) } catch {}
   } catch (e: any) { msg.error(e?.response?.data?.error || '加载失败') }
+}
+
+function collectToolResults(content: any, out: Record<string, { result: any; error: boolean }>) {
+  if (!Array.isArray(content)) return
+  for (const c of content) {
+    if (c.type === 'toolResult' || c.type === 'tool_result') {
+      const id = c.toolCallId || c.tool_call_id || c.id
+      if (id) out[id] = { result: c.result ?? c.content ?? c.output, error: !!(c.isError || c.is_error) }
+    }
+  }
+}
+
+function appendToTimeline(items: TimelineItem[], content: any, toolResults: Record<string, { result: any; error: boolean }>, nextOrder: () => number) {
+  if (!Array.isArray(content)) return
+  for (const c of content) {
+    if (c.type === 'thinking') {
+      const t = c.thinking || ''
+      if (t.trim()) items.push({ kind: 'thinking', text: t, order: nextOrder() })
+    } else if (c.type === 'text') {
+      const t = c.text || ''
+      if (t.trim()) items.push({ kind: 'text', text: t, order: nextOrder() })
+    } else if (c.type === 'toolCall' || c.type === 'tool_call' || c.type === 'toolcall') {
+      const id = c.id || c.toolCallId || c.tool_call_id
+      const name = c.name || c.toolName || c.tool_name
+      const args = c.arguments ?? c.args ?? c.input
+      const r = id ? toolResults[id] : undefined
+      items.push({
+        kind: 'toolcall',
+        id: id || '',
+        name: name || '',
+        args,
+        status: 'done',
+        result: r?.result,
+        error: r?.error,
+        order: nextOrder(),
+      })
+    }
+  }
 }
 
 function extractText(content: any): string {
@@ -66,20 +125,9 @@ function extractText(content: any): string {
   return ''
 }
 
-function buildTimeline(content: any): TimelineItem[] {
-  if (!Array.isArray(content)) return []
-  const items: TimelineItem[] = []
-  for (const c of content) {
-    if (c.type === 'thinking') {
-      const t = c.thinking || ''
-      if (t.trim()) items.push({ kind: 'thinking', text: t, order: items.length })
-    } else if (c.type === 'text') {
-      const t = c.text || ''
-      if (t.trim()) items.push({ kind: 'text', text: t, order: items.length })
-    }
-    // toolCalls from history are already done
-  }
-  return items
+function buildTimeline(_content: any): TimelineItem[] {
+  // legacy; replaced by appendToTimeline + collectToolResults during history load
+  return []
 }
 
 // ---- WebSocket ----

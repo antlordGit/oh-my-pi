@@ -11,17 +11,20 @@ const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographe
 const fullText = computed(() => props.text || '')
 const long = computed(() => fullText.value.length > 3000)
 const collapsed = ref(true)
-
-// 不要 unescape！后端返回的 &lt;h1&gt; 已经是 HTML 实体形式，
-// MarkdownIt 会把它当作普通文本原样输出，浏览器会自动渲染为 <h1>
-// 之前 unescape 会把 &lt; 还原成 <，然后 MarkdownIt 又把它转义成 &lt;，
-// 但问题在于某些情况下转义会被双重化
+// 先把已转义的 HTML 还原，再传给 markdown
+const unescapedText = computed(() => {
+  return (fullText.value || '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+})
 const preview = computed(() =>
   long.value && collapsed.value
-    ? fullText.value.slice(0, 2000) + '\n\n··· 点击展开全部 ' + fullText.value.length + ' 字符'
-    : fullText.value
+    ? unescapedText.value.slice(0, 2000) + '\n\n··· 点击展开全部 ' + unescapedText.value.length + ' 字符'
+    : unescapedText.value
 )
-
 const html = computed(() => md.render(preview.value))
 </script>
 
