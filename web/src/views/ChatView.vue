@@ -3,12 +3,13 @@ import { onMounted, onUnmounted, ref, computed, nextTick, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   getSession, getMessages, getState,
-  prompt, abort as abortSession, unarchive as unarchiveSession, wsUrl,
+  prompt, abort as abortSession, unarchive as unarchiveSession, newSession as newSessionRpc, wsUrl,
   type SessionSummary,
 } from '@/api/session'
 import { useMessage } from 'naive-ui'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ToolCard from '@/components/ToolCard.vue'
+import WorkspaceTree from '@/components/WorkspaceTree.vue'
 import { api } from '@/api/http'
 
 const route = useRoute()
@@ -22,7 +23,6 @@ const input = ref('')
 const sending = ref(false)
 const isStreaming = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
-const showThinking = ref(true)
 
 type TimelineItem =
   | { kind: 'thinking'; text: string; order: number }
@@ -43,6 +43,26 @@ let itemOrder = 0
 
 const isArchived = ref(false)
 const restoringArchive = ref(false)
+const showThinking = ref(true)
+const showWorkspaceTree = ref(false)
+
+const gridComputed = computed(() =>
+  !isArchived.value && showWorkspaceTree.value
+    ? '200px minmax(0, 1fr) 260px'
+    : '200px minmax(0, 1fr)',
+)
+
+// Shared optimistic status override (also written by the admin control room and
+// the session list). Keep it in step on restore so other views don't snap the
+// row back to a stale "archived" value. See SessionListView.effectiveStatus().
+const OVERRIDES_KEY = 'omp.admin.sessionOverrides'
+function setStatusOverride(id: string, status: 'active' | 'archived') {
+  try {
+    const m = JSON.parse(sessionStorage.getItem(OVERRIDES_KEY) || '{}') as Record<string, string>
+    m[id] = status
+    sessionStorage.setItem(OVERRIDES_KEY, JSON.stringify(m))
+  } catch {}
+}
 
 async function restoreFromArchive() {
   if (restoringArchive.value) return
@@ -52,6 +72,7 @@ async function restoreFromArchive() {
     await api.post(`/api/sessions/${sessionId.value}/resume`)
     isArchived.value = false
     if (session.value) session.value.status = 'active'
+    setStatusOverride(sessionId.value, 'active')
     // Load messages from the resumed session and reconnect WS
     await refresh()
     connectWs()
@@ -318,6 +339,77 @@ async function treeEnter(item: any) {
 
 async function doAbort() { try { await abortSession(sessionId.value) } catch {} }
 
+async function doRewind() {
+  if (sending.value || isStreaming.value || isArchived.value) return
+  const text = '/rewind'
+  sending.value = true
+  turnLog.value.push({ role: 'user', timeline: [], userText: text })
+  timeline.value = []; itemOrder = 0
+  Object.keys(toolCallById).forEach(k => delete toolCallById[k])
+  scrollToBottom()
+  try { await prompt(sessionId.value, text) }
+  catch (e: any) { msg.error(e?.response?.data?.error || '回退失败') }
+  finally { sending.value = false }
+}
+
+async function doNew() {
+  if (sending.value || isStreaming.value || isArchived.value) return
+  sending.value = true
+  try {
+    // /new is a CLI slash command that triggers session.newSession() in
+    // coding-agent. The web equivalent is the new_session RPC (backend
+    // POST /api/sessions/{id}/new-session) — sending "/new" through the
+    // PROMPT RPC is NOT intercepted (builtin-registry only registers a
+    // handleTui, not a handle), so the LLM would see it as plain text.
+    const r = await newSessionRpc(sessionId.value)
+    if (r?.cancelled) {
+      msg.warning('新对话已被取消（扩展钩子中断）')
+      return
+    }
+    // newSession() swaps the session file under the hood; refresh state and
+    // reload messages to mirror the cleared transcript.
+    await refresh()
+  } catch (e: any) {
+    msg.error(e?.response?.data?.error || '新对话失败')
+  } finally {
+    sending.value = false
+  }
+}
+
+// ---- Operator message index (left sidebar) -------------------------------
+const turnRefs = ref<HTMLElement[]>([])
+function setTurnRef(el: any, i: number) {
+  if (el) turnRefs.value[i] = el as HTMLElement
+}
+
+interface UserIndexItem { turnIdx: number; text: string }
+const userIndex = computed<UserIndexItem[]>(() =>
+  turnLog.value
+    .map((t, i) => (t.role === 'user' ? { turnIdx: i, text: t.userText || '' } : null))
+    .filter((x): x is UserIndexItem => x !== null),
+)
+
+function scrollToTurn(turnIdx: number) {
+  const el = turnRefs.value[turnIdx]
+  if (!el) return
+  // Account for the sticky-ish scroll behavior of .messages — scroll the
+  // nearest scrollable ancestor rather than the page.
+  const messages = messagesEl.value
+  if (messages) {
+    const elTop = el.offsetTop
+    messages.scrollTo({ top: elTop - 12, behavior: 'smooth' })
+  } else {
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+}
+
+function previewText(text: string): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim()
+  return oneLine.length > 36 ? oneLine.slice(0, 36) + '…' : oneLine
+}
+
+const canRewind = computed(() => turnLog.value.length > 0)
+
 watch(() => timeline.value.length, scrollToBottom)
 onMounted(async () => { await refresh(); if (!isArchived.value) connectWs() })
 onUnmounted(() => { if (ws.value) try { ws.value.close() } catch {} })
@@ -331,7 +423,7 @@ const composedAt = computed(() => {
 </script>
 
 <template>
-  <div class="chat">
+  <div class="chat" :style="{ gridTemplateColumns: gridComputed }">
     <!-- Flat topbar (Volcengine style) -->
     <header class="topbar fade-up">
       <button class="back-btn btn-ghost" @click="router.push('/sessions')">
@@ -355,8 +447,35 @@ const composedAt = computed(() => {
         <button v-if="!isArchived" class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
           中断
         </button>
+        <button v-if="!isArchived" class="btn-mini ws-btn" :class="{ on: showWorkspaceTree }" @click="showWorkspaceTree = !showWorkspaceTree">
+          <span class="caret">▤</span>
+          <span>{{ showWorkspaceTree ? '收起' : '目录' }}</span>
+        </button>
       </div>
     </header>
+
+    <aside class="chat-index" v-if="!isArchived && userIndex.length">
+      <header class="chat-index-head mono">
+        <span class="caret">§</span>
+        <span>索引</span>
+        <span class="dim">{{ userIndex.length }}</span>
+      </header>
+      <ul class="chat-index-list" v-if="userIndex.length">
+        <li
+          v-for="(item, idx) in userIndex"
+          :key="`idx-${item.turnIdx}-${idx}`"
+          class="chat-index-item"
+          :title="item.text"
+          @click="scrollToTurn(item.turnIdx)"
+        >
+          <span class="chat-index-num mono">{{ String(idx + 1).padStart(2, '0') }}</span>
+          <span class="chat-index-text">{{ previewText(item.text) || '(空)' }}</span>
+        </li>
+      </ul>
+      <p class="chat-index-empty mono dim" v-else>暂无操作员消息</p>
+    </aside>
+
+    <WorkspaceTree v-if="!isArchived && showWorkspaceTree" :repo-id="session?.repoId" />
 
     <main class="messages" ref="messagesEl">
       <!-- Archived session: locked -->
@@ -375,28 +494,13 @@ const composedAt = computed(() => {
       </div>
 
       <!-- Welcome -->
-      <div v-else-if="!turnLog.length && !timeline.length" class="welcome fade-up">
-        <span class="tag">工作室 · Workshop</span>
-        <h2 class="welcome-title">
-          一张<br />
-          <strong>空白纸.</strong>
-        </h2>
-        <p class="welcome-dek">
-          描述你的需求，AI 代理在工作目录
-          <code>{{ session?.repoId || 'workspace' }}</code>
-          中执行编辑、读取与命令。
-        </p>
-        <div class="welcome-meta">
-          <span class="kbd">↵</span><span class="serial">发送</span>
-          <span class="kbd">⇧↵</span><span class="serial">换行</span>
-          <span class="kbd">/tree</span><span class="serial">分支</span>
-        </div>
-      </div>
+      <!--v-if-->
 
       <!-- History turns -->
       <div
         v-for="(t, i) in turnLog"
         :key="'turn-' + i"
+        :ref="el => setTurnRef(el, i)"
         class="turn"
         :style="{ animationDelay: i * 60 + 'ms' }"
       >
@@ -506,6 +610,24 @@ const composedAt = computed(() => {
 
     <!-- Composer — hidden for archived sessions -->
     <footer v-if="!isArchived" class="composer">
+      <div class="composer-toolbar" v-if="canRewind">
+        <button class="btn-mini rewind-btn" :disabled="sending || isStreaming" @click="doRewind">
+          <span class="caret">↺</span>
+          <span>回退</span>
+        </button>
+        <button class="btn-mini new-btn" :disabled="sending || isStreaming" @click="doNew">
+          <span class="caret">+</span>
+          <span>新对话</span>
+        </button>
+        <span class="serial dim rewind-hint">回退到上一轮检查点 · 新对话清空当前 leaf</span>
+      </div>
+      <div class="composer-toolbar" v-else>
+        <button class="btn-mini new-btn" :disabled="sending || isStreaming" @click="doNew">
+          <span class="caret">+</span>
+          <span>新对话</span>
+        </button>
+        <span class="serial dim rewind-hint">开始新对话（清空当前 leaf）</span>
+      </div>
       <textarea
         v-model="input"
         class="composer-input field-raw"
@@ -524,10 +646,6 @@ const composedAt = computed(() => {
             <span class="kbd">⇧↵</span>
             <span class="serial">换行</span>
           </span>
-          <span class="hint">
-            <span class="kbd">/tree</span>
-            <span class="serial">分支</span>
-          </span>
           <span class="serial dim">{{ composedAt }} · {{ input.length }} 字符</span>
         </div>
         <button class="btn-primary send-btn" :disabled="sending || isStreaming || !input.trim()" @click="send">
@@ -542,11 +660,92 @@ const composedAt = computed(() => {
 .chat {
   display: grid;
   grid-template-rows: auto 1fr auto;
+  grid-template-columns: 200px minmax(0, 1fr) 260px;
+  column-gap: 14px;
   height: 100dvh;
-  max-width: 860px;
+  max-width: 1240px;
   margin: 0 auto;
   padding: 20px 32px;
   gap: 16px;
+}
+.topbar { grid-column: 1 / -1; }
+.composer { grid-column: 1 / -1; }
+
+/* ====================================================================
+   Left-side operator message index
+   ==================================================================== */
+.chat-index {
+  grid-column: 1;
+  grid-row: 2;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  align-self: start;
+  position: sticky;
+  top: 84px;
+  max-height: calc(100dvh - 110px);
+}
+.chat-index-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  font-size: 11px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+.chat-index-head .caret { color: var(--brand); }
+.chat-index-head .dim { color: var(--ink-faint); margin-left: auto; }
+.chat-index-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.chat-index-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.45;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.chat-index-item:hover { background: var(--brand-soft); color: var(--ink); }
+.chat-index-num {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--brand);
+  background: var(--brand-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: 1px 5px;
+  min-width: 22px;
+  text-align: center;
+}
+.chat-index-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chat-index-empty {
+  padding: 18px 14px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin: 0;
+  text-align: center;
 }
 
 /* ====================================================================
@@ -612,6 +811,22 @@ const composedAt = computed(() => {
 }
 .status-pill.live { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
 .abort-btn { padding: 4px 12px; font-size: 11px; }
+.ws-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.ws-btn:hover { color: var(--brand); border-color: var(--brand); }
+.ws-btn.on { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
+.ws-btn.on:hover { background: var(--brand-hover); }
 
 /* ====================================================================
    Archived block
@@ -661,47 +876,6 @@ const composedAt = computed(() => {
   overflow-y: auto;
   padding: 16px 0;
   scroll-behavior: smooth;
-}
-
-.welcome {
-  margin-top: 32px;
-  margin-bottom: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-.welcome-title {
-  font-family: var(--font-display);
-  font-size: clamp(40px, 5vw, 56px);
-  font-weight: 800;
-  line-height: 1.06;
-  letter-spacing: -0.025em;
-  color: var(--ink);
-  margin: 0;
-}
-.welcome-title strong { color: var(--brand); font-weight: 800; }
-.welcome-dek {
-  font-size: 15px;
-  color: var(--ink-2);
-  line-height: 1.65;
-  max-width: 480px;
-}
-.welcome-dek code {
-  font-family: var(--font-mono);
-  background: var(--brand-soft);
-  color: var(--brand);
-  padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  border: 1px solid var(--border-soft);
-}
-.welcome-meta {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 8px;
-  padding-top: 16px;
-  border-top: 1px dashed var(--border);
 }
 
 /* Turns — note: turn-role is now HORIZONTAL (no vertical writing-mode) */
@@ -842,6 +1016,46 @@ const composedAt = computed(() => {
   box-shadow: var(--shadow-focus);
 }
 
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+.rewind-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.rewind-btn:hover:not(:disabled) { color: var(--brand); border-color: var(--brand); }
+.rewind-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.new-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.new-btn:hover:not(:disabled) { color: var(--brand); border-color: var(--brand); }
+.new-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.rewind-hint { font-size: 11px; }
+
 .composer-input {
   border: 0 !important;
   border-radius: 0 !important;
@@ -872,8 +1086,10 @@ const composedAt = computed(() => {
 /* ====================================================================
    Mobile collapse
    ==================================================================== */
-@media (max-width: 640px) {
-  .chat { padding: 12px 16px; }
+@media (max-width: 900px) {
+  .chat { padding: 12px 16px; grid-template-columns: 1fr; max-width: none; }
+  .chat-index { display: none; }
+  .workspace-tree { display: none; }
   .topbar { grid-template-columns: auto 1fr; }
   .topbar-status { grid-column: 1 / -1; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
   .session-title { font-size: 15px; }

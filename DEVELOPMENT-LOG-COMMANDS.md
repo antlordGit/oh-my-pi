@@ -11,6 +11,8 @@
 | `/fork` | 内建斜杠 | `POST /api/sessions/{id}/branch` | — | omp `branch(entryId)` |
 | `/switch` | 内建斜杠 | `POST /api/sessions/{id}/switch` | — | omp `switch_session(sessionPath)` |
 | `/model` | 内建斜杠 | `GET /admin/config` 拿 `model.active` | — | 后端已有 `set_model` RPC，但前端没接 |
+| `/new` | 内建斜杠 | `POST /api/sessions/{id}/new-session`（RPC `new_session`） | ChatView composer-toolbar「新对话」按钮 + doNew() | **不走 prompt RPC**：`builtin-registry.ts` 只注册了 `handleTui`，没有 `handle`，所以 web 端经 `prompt()` 发 `/new` 文本不会被 RPC 层斜杠拦截，会被 LLM 当普通文本；正确做法是直接调 `new_session` RPC，对应 coding-agent 端 `session.newSession()` → `sessionManager.newSession()`，与 CLI `/new` 行为完全一致（创建新 session 文件、`sessionFile` 切换、返回 `{cancelled}`） |
+| `/rewind` | 内建斜杠 (LLM 工具) | `POST /api/sessions/{id}/prompt`（作为文本） | ChatView composer-toolbar「回退」按钮 + doRewind() | 例外：不走 RPC，而是把 `/rewind` 当文本 prompt 喂给 LLM；后端 coding-agent 端识别为 `RewindTool`（见 `packages/coding-agent/src/tools/checkpoint.ts`，需 `checkpoint.enabled=true`）；按钮点击效果等同在输入框输入 `/rewind` 并回车，会先推入操作员轮次再发送 |
 | `/settings` `/setup` `/plan` `/goal` `/loop` `/share` `/export` `/dump` `/join` `/leave` `/browser` | 内建斜杠 | — | — | 未实现，RPC 模式下大多走 `handle()` 路径，可调起 |
 
 ## 已有 RPC 命令（已封 Java 端点，可直接用）
@@ -49,6 +51,9 @@
 | **恢复会话** | `POST /api/sessions/{id}/unarchive` | 列表「恢复」按钮 | status → active + 计数校验 |
 | 发送 prompt | `POST /api/sessions/{id}/prompt` | ChatView send() | 归档态自动 promote |
 | 中断 | `POST /api/sessions/{id}/abort` | ChatView 中断按钮 | 发 `abort` RPC |
+| 回退 | `POST /api/sessions/{id}/prompt`（发 `/rewind` 文本） | ChatView composer-toolbar「回退」按钮 | 等同操作员手动输入 `/rewind` 并回车；只在 `turnLog` 非空时显示（无历史可回退）；`sending`/`isStreaming` 时禁用；需后端 `checkpoint.enabled=true` |
+| 新对话 | `POST /api/sessions/{id}/new-session`（RPC `new_session`） | ChatView composer-toolbar「新对话」按钮 | 调 `new_session` RPC，不发 prompt；coding-agent 端触发 `session.newSession()` 创建新 session 文件 + `chatContainer.clear()`；前端 `refresh()` 重新加载消息（旧的根消息会丢失，因为新 session 文件独立） |
+| 消息复制 | `navigator.clipboard.writeText`（前端纯客户端，无后端） | MessageBubble 右上角按钮 | hover 消息框显示「⧉ 复制」按钮，点击复制 markdown 原始文本（不经 v-html 渲染，不带折叠后缀）；复制成功显示「✓ 已复制」1.6s；HTTP/老浏览器 fallback 到 `document.execCommand('copy')`；按钮 `@click.stop` 不触发消息框自身的展开/折叠 |
 | WS 实时事件 | `WS /ws/sessions/{id}?token=` | ChatView connectWs | token 走 query auth |
 | Admin 配置 CRUD | `/admin/config` GET/PUT/DELETE | AdminView | 支持编辑/删除/新增 |
 | 审计查询 | `/admin/audit/{prompts,tools}` | AdminView | 最近 50 条 |

@@ -1504,11 +1504,14 @@ function b() {
 			// which let the lazy match cross newlines and capture the whole script as the
 			// "cwd" when any later line contained `&&`. The model intended `cd` to run as
 			// part of a multiline script, not to relocate the entire command.
-			const command = [
-				"cd /this/directory/definitely/does/not/exist/12345",
-				"echo first-line",
-				"echo second && echo third",
-			].join("\n");
+			//
+			// The workspace path-boundary guard now scans the command for out-of-cwd paths
+			// BEFORE execution. The `cd` runs at runtime inside the test cwd, so the target
+			// dir must exist inside it. Create it first, then use a relative path so the
+			// guard doesn't block the command.
+			const cdTarget = "subdir";
+			fs.mkdirSync(path.join(testDir, cdTarget), { recursive: true });
+			const command = [`cd ${cdTarget} && echo first-line`, "echo second && echo third"].join("\n");
 			const result = await bashTool.execute("test-call-multiline-cd", { command });
 			const output = getTextOutput(result);
 			expect(output).toContain("first-line");

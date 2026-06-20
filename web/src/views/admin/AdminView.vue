@@ -2,19 +2,37 @@
 import { onMounted, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { useMessage } from 'naive-ui'
+import { useMessage, useDialog } from 'naive-ui'
 import { api } from '@/api/http'
 import { unarchive as unarchiveSession } from '@/api/session'
 
 const router = useRouter()
 const auth = useAuthStore()
 const msg = useMessage()
+const dialog = useDialog()
 
 const tab = ref<'config' | 'sessions' | 'audit'>('config')
 const config = ref<Record<string, any>>({})
 const sessions = ref<any[]>([])
 const prompts = ref<any[]>([])
 const tools = ref<any[]>([])
+const responses = ref<any[]>([])
+const collapsedGroups = ref(new Set<string>())
+
+/** Auto-collapse new groups when audit data changes. */
+function autoCollapse() {
+  const s = new Set(collapsedGroups.value)
+  for (const g of auditGroups.value) {
+    s.add(g.sessionId)
+  }
+  collapsedGroups.value = s
+}
+
+function toggleGroup(sid: string) {
+  const s = new Set(collapsedGroups.value)
+  if (s.has(sid)) s.delete(sid); else s.add(sid)
+  collapsedGroups.value = s
+}
 const pool = ref<any>(null)
 const newKey = ref('')
 const newValue = ref('')
@@ -77,10 +95,52 @@ async function loadSessions() {
   pool.value = (await api.get('/admin/pool')).data
 }
 async function loadAudit() {
-  prompts.value = (await api.get('/admin/audit/prompts')).data
-  tools.value = (await api.get('/admin/audit/tools')).data
+  const [p, t, r] = await Promise.all([
+    api.get('/admin/audit/prompts'),
+    api.get('/admin/audit/tools'),
+    api.get('/admin/audit/responses'),
+  ])
+  prompts.value = p.data
+  tools.value = t.data
+  responses.value = r.data
+  // Collapse all groups by default; admin clicks to expand.
+  autoCollapse()
 }
 async function loadAll() { await Promise.all([loadConfig(), loadSessions(), loadAudit()]) }
+
+/** Group prompts + tools + responses by sessionId, each group sorted by time descending. */
+const auditGroups = computed(() => {
+  const map = new Map<string, { sessionId: string; items: any[]; lastTime: number }>()
+  const group = (sid: string) => {
+    let g = map.get(sid)
+    if (!g) { g = { sessionId: sid, items: [], lastTime: 0 }; map.set(sid, g) }
+    return g
+  }
+  for (const p of prompts.value) {
+    const g = group(p.sessionId)
+    g.items.push({ ...p, _type: 'prompt' as const, _time: p.sentAt })
+  }
+  for (const t of tools.value) {
+    const g = group(t.sessionId)
+    g.items.push({ ...t, _type: 'tool' as const, _time: t.startedAt })
+  }
+  for (const r of responses.value) {
+    const g = group(r.sessionId)
+    g.items.push({ ...r, _type: 'response' as const, _time: r.finishedAt })
+  }
+  const groups: { sessionId: string; items: any[]; lastTime: number }[] = []
+  for (const g of map.values()) {
+    g.items.sort((a: any, b: any) => {
+      const ta = a._time ? Date.parse(a._time) : 0
+      const tb = b._time ? Date.parse(b._time) : 0
+      return tb - ta
+    })
+    g.lastTime = Math.max(...g.items.map((i: any) => (i._time ? Date.parse(i._time) : 0)))
+    groups.push({ sessionId: g.sessionId, items: g.items, lastTime: g.lastTime })
+  }
+  groups.sort((a, b) => b.lastTime - a.lastTime)
+  return groups
+})
 
 async function saveConfig() {
   if (!newKey.value) return
@@ -138,6 +198,38 @@ async function killSession(id: string) {
   loadSessions()
 }
 
+/** Confirm before force-killing a single session. */
+function confirmKillSession(id: string) {
+  const row = sessions.value.find(s => s.sessionId === id)
+  const label = row?.title || id.slice(0, 8)
+  dialog.warning({
+    title: '终止会话',
+    content: `确认终止会话「${label}」？运行中的进程将被强制结束。`,
+    positiveText: '终止',
+    negativeText: '取消',
+    onPositiveClick: () => { void killSession(id) },
+  })
+}
+
+/** Confirm before killing every currently-active session. */
+function confirmKillAllSessions() {
+  const ids = sessions.value
+    .filter(s => effectiveStatus(s) === 'active')
+    .map(s => s.sessionId)
+  if (!ids.length) { msg.info('没有活跃会话'); return }
+  dialog.error({
+    title: '终止所有会话',
+    content: `确认终止全部 ${ids.length} 个活跃会话？此操作会强制结束它们的进程，不可撤销。`,
+    positiveText: `全部终止 (${ids.length})`,
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      // killSession surfaces its own per-row error/rollback; await all then reconcile.
+      await Promise.allSettled(ids.map(id => killSession(id)))
+      loadSessions()
+    },
+  })
+}
+
 /**
  * Restore a killed/archived session: optimistic flip to "active", then call the
  * user-facing unarchive API. The next prompt to the session will lazily spawn a
@@ -157,6 +249,19 @@ async function restoreSession(id: string) {
     return
   }
   loadSessions()
+}
+
+/** Confirm before restoring a single session. */
+function confirmRestoreSession(id: string) {
+  const row = sessions.value.find(s => s.sessionId === id)
+  const label = row?.title || id.slice(0, 8)
+  dialog.info({
+    title: '恢复会话',
+    content: `确认恢复会话「${label}」？下次访问时将重新拉起进程。`,
+    positiveText: '恢复',
+    negativeText: '取消',
+    onPositiveClick: () => { void restoreSession(id) },
+  })
 }
 
 function fmtDate(s?: string) {
@@ -203,25 +308,39 @@ onMounted(loadAll)
     <!-- Admin stats -->
     <section class="admin-hero-stats-section fade-up" style="animation-delay:160ms">
       <div class="admin-hero-stats">
-        <div class="stat-cell">
-          <span class="serial">运行时配置</span>
-          <span class="big-num">{{ String(configCount).padStart(2, '0') }}</span>
-          <span class="stat-foot">已登记的配置项</span>
+        <div class="stat-cell stat-config">
+          <div class="stat-ring">
+            <span class="big-num">{{ String(configCount).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="serial">运行时配置</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">活跃会话</span>
-          <span class="big-num">{{ String(activeSessions).padStart(2, '0') }}</span>
-          <span class="stat-foot">当下正在运行</span>
+        <div class="stat-cell stat-active">
+          <div class="stat-ring">
+            <span class="stat-glow active"></span>
+            <span class="big-num">{{ String(activeSessions).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="stat-dot live"></span>
+            <span class="serial">活跃会话</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">池占用</span>
-          <span class="big-num">{{ poolUsed }}<span class="big-suffix">/10</span></span>
-          <span class="stat-foot">沙箱并发上限</span>
+        <div class="stat-cell stat-pool">
+          <div class="stat-ring">
+            <span class="big-num">{{ poolUsed }}<span class="big-suffix">/{{ pool?.maxConcurrent || 10 }}</span></span>
+          </div>
+          <div class="stat-foot">
+            <span class="serial">沙箱并发</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">审计日志</span>
-          <span class="big-num">{{ String(prompts.length + tools.length).padStart(3, '0') }}</span>
-          <span class="stat-foot">指令 + 工具调用</span>
+        <div class="stat-cell stat-audit">
+          <div class="stat-ring">
+            <span class="big-num">{{ String(auditGroups.flatMap(g => g.items).length).padStart(3, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="serial">审计日志</span>
+          </div>
         </div>
       </div>
     </section>
@@ -290,7 +409,14 @@ onMounted(loadAll)
           <h2 class="panel-title">会话与进程</h2>
           <p class="panel-sub">所有沙箱会话。可强制终止异常进程。</p>
         </div>
-        <span class="serial">池占用 <strong class="accent">{{ poolUsed }}</strong> / 10</span>
+        <div class="panel-head-actions">
+          <button
+            class="btn-mini-danger"
+            :disabled="!activeSessions"
+            @click="confirmKillAllSessions"
+          >终止所有会话</button>
+          <span class="serial">池占用 <strong class="accent">{{ poolUsed }}</strong> / 10</span>
+        </div>
       </header>
 
       <div v-if="!sessions.length" class="empty card">
@@ -317,12 +443,12 @@ onMounted(loadAll)
           <button
             v-if="effectiveStatus(s) === 'active'"
             class="btn-mini-danger"
-            @click="killSession(s.sessionId)"
+            @click="confirmKillSession(s.sessionId)"
           >终止</button>
           <button
             v-else
             class="btn-mini-primary"
-            @click="restoreSession(s.sessionId)"
+            @click="confirmRestoreSession(s.sessionId)"
           >恢复</button>
         </div>
       </div>
@@ -333,38 +459,56 @@ onMounted(loadAll)
       <header class="panel-head">
         <div>
           <h2 class="panel-title">审计日志</h2>
-          <p class="panel-sub">最近 50 条指令与工具调用，按时间倒序。</p>
+          <p class="panel-sub">指令、工具调用与 OMP 回复，按会话分组展示。</p>
         </div>
-        <span class="serial dim">{{ prompts.length + tools.length }} 条</span>
+        <span class="serial dim">{{ auditGroups.flatMap(g => g.items).length }} 条</span>
       </header>
 
-      <h3 class="block-title">指令记录</h3>
-      <div v-if="!prompts.length" class="empty card">
+      <div v-if="!auditGroups.length" class="empty card">
         <span class="empty-icon">—</span>
-        <p class="empty-text">暂无指令记录</p>
+        <p class="empty-text">暂无审计记录</p>
       </div>
-      <div v-else class="card audit-card">
-        <div v-for="p in prompts" :key="'p' + p.id" class="audit-row mono">
-          <span class="dim">{{ fmtDate(p.sentAt) }}</span>
-          <code class="accent">{{ p.sessionId?.slice(0, 8) }}</code>
-          <span class="audit-text">{{ (p.promptText || '').slice(0, 200) }}</span>
-        </div>
-      </div>
+      <div v-else class="audit-groups">
+        <div v-for="group in auditGroups" :key="group.sessionId" class="card audit-group-card">
+          <header class="audit-group-head" @click="toggleGroup(group.sessionId)" style="cursor:pointer">
+            <span class="audit-group-head-left">
+              <span class="audit-group-arrow mono" :class="{ open: !collapsedGroups.has(group.sessionId) }">▶</span>
+              <code class="accent">{{ group.sessionId?.slice(0, 8) }}</code>
+              <span class="dim" style="font-size:11px">{{ group.items.length }} 条</span>
+            </span>
+            <span class="dim mono" style="font-size:11px">{{ fmtDate(group.lastTime) }}</span>
+          </header>
+          <div v-if="!collapsedGroups.has(group.sessionId)">
+            <div v-for="item in group.items" :key="item._type + item.id" class="audit-row mono">
+              <span class="dim">{{ fmtDate(item._time) }}</span>
 
-      <h3 class="block-title">工具调用</h3>
-      <div v-if="!tools.length" class="empty card">
-        <span class="empty-icon">—</span>
-        <p class="empty-text">暂无工具调用</p>
-      </div>
-      <div v-else class="card audit-card">
-        <div v-for="t in tools" :key="'t' + t.id" class="audit-row mono">
-          <span class="dim">{{ fmtDate(t.startedAt) }}</span>
-          <code class="accent">{{ t.sessionId?.slice(0, 8) }}</code>
-          <span class="status-tag" :class="t.isError ? 'err' : 'ok'">
-            <span class="status-dot"></span>
-            {{ t.toolName }}{{ t.isError ? ' · 失败' : '' }}
-          </span>
-          <span class="audit-text dim">{{ (t.arguments || '').slice(0, 160) }}</span>
+              <!-- type badge -->
+              <span class="audit-type"
+                :class="{ prompt: item._type === 'prompt', tool: item._type === 'tool', response: item._type === 'response' }"
+              >
+                {{ { prompt: '指令', tool: '工具', response: '回复' }[item._type as string] }}
+              </span>
+
+              <!-- prompt: plain text -->
+              <span v-if="item._type === 'prompt'" class="audit-text">{{ (item.promptText || '').slice(0, 400) }}</span>
+              <!-- tool: toolName + isError badge + arguments -->
+              <span v-else-if="item._type === 'tool'" class="audit-text dim">
+                <span class="status-tag" :class="item.isError ? 'err' : 'ok'" style="margin-right:6px">
+                  <span class="status-dot"></span>
+                  {{ item.toolName }}{{ item.isError ? ' · 失败' : '' }}
+                </span>
+                {{ (item.arguments || '').slice(0, 160) }}
+              </span>
+              <!-- response: stopReason badge + fullText -->
+              <span v-else class="audit-text dim">
+                <span class="status-tag" :class="item.isError ? 'err' : 'ok'" style="margin-right:6px">
+                  <span class="status-dot"></span>
+                  {{ item.isError ? '失败' : item.stopReason === 'stop' ? '完成' : (item.stopReason || '完成') }}
+                </span>
+                {{ (item.fullText || '').slice(0, 400) }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -437,47 +581,139 @@ onMounted(loadAll)
 /* ====================================================================
    Admin Hero stats
    ==================================================================== */
+/* ====================================================================
+   Admin Hero stats — instrumentation panel (same language as SessionListView)
+   ==================================================================== */
 .admin-hero-stats-section {
-  padding: 32px 0 16px;
+  padding: 24px 0 8px;
   position: relative;
   z-index: 1;
 }
 
 .admin-hero-stats {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  background: linear-gradient(135deg,
-    rgba(22, 93, 255, 0.04) 0%,
-    rgba(123, 123, 255, 0.08) 100%);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-card);
-  padding: 20px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
-.stat-cell {
+
+.admin-hero-stats .stat-cell {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.6);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  align-items: center;
+  gap: 14px;
+  padding: 28px 16px 22px;
+  background: var(--surface);
+  position: relative;
+  border: 0;
+  border-radius: 0;
 }
-.big-num {
-  font-family: var(--font-display);
-  font-size: clamp(28px, 2.6vw, 38px);
-  font-weight: 800;
-  letter-spacing: -0.025em;
+
+.stat-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+}
+
+.stat-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+}
+
+.stat-glow {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  z-index: -1;
+  opacity: 0;
+}
+
+.stat-glow.active {
+  background: radial-gradient(circle, rgba(34, 197, 94, 0.18) 0%, transparent 70%);
+  animation: stat-pulse 3.5s var(--ease-out) infinite;
+}
+
+@keyframes stat-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.admin-hero-stats .big-num {
+  font-family: var(--font-mono);
+  font-size: clamp(36px, 3.6vw, 48px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
   color: var(--brand);
   line-height: 1;
+  position: relative;
+  z-index: 1;
+  font-variant-numeric: tabular-nums;
 }
+
+/* Active — green */
+.stat-active .big-num {
+  color: #16A34A;
+}
+
 .big-suffix {
   font-size: 16px;
   font-weight: 600;
   color: var(--ink-mute);
   margin-left: 2px;
 }
-.stat-foot { font-size: 11px; color: var(--ink-mute); }
+
+.stat-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.stat-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.stat-dot.live {
+  background: #16A34A;
+  box-shadow: 0 0 6px rgba(22, 163, 74, 0.35);
+  animation: stat-pulse 3.5s var(--ease-out) infinite;
+}
+
+/* ====================================================================
+   Mobile collapse
+   ==================================================================== */
+@media (max-width: 900px) {
+  .admin-hero-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .admin-hero-stats .stat-cell {
+    padding: 20px 14px 18px;
+    gap: 10px;
+  }
+  .stat-ring {
+    width: 72px;
+    height: 72px;
+  }
+  .admin-hero-stats .big-num {
+    font-size: 32px;
+  }
+}
 
 /* ====================================================================
    Tabs
@@ -532,6 +768,11 @@ onMounted(loadAll)
   align-items: flex-end;
   gap: 16px;
   flex-wrap: wrap;
+}
+.panel-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
 }
 .panel-title {
   font-family: var(--font-display);
@@ -693,9 +934,31 @@ onMounted(loadAll)
    Audit
    ==================================================================== */
 .audit-card { overflow: hidden; padding: 0; }
+.audit-groups { display: flex; flex-direction: column; gap: 16px; }
+.audit-group-card { overflow: hidden; padding: 0; }
+.audit-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-soft);
+  font-size: 13px;
+  user-select: none;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.audit-group-head:hover { background: var(--surface-hover); }
+.audit-group-head-left { display: inline-flex; align-items: center; gap: 8px; }
+.audit-group-arrow {
+  font-size: 9px;
+  color: var(--ink-mute);
+  transition: transform var(--dur-fast) var(--ease-out);
+  display: inline-block;
+}
+.audit-group-arrow.open { transform: rotate(90deg); }
 .audit-row {
   display: grid;
-  grid-template-columns: 90px 70px 160px 1fr;
+  grid-template-columns: 90px 80px 1fr;
   gap: 14px;
   padding: 10px 18px;
   border-bottom: 1px solid var(--border);
@@ -707,6 +970,21 @@ onMounted(loadAll)
 .audit-row:last-child { border-bottom: 0; }
 .audit-row:hover { background: var(--surface-hover); }
 .audit-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.audit-type {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  color: var(--ink-mute);
+}
+.audit-type.prompt { background: var(--brand-soft); border-color: var(--brand-soft-2); color: var(--brand); }
+.audit-type.tool   { background: var(--good-soft); border-color: var(--good-soft-2, var(--good-soft)); color: var(--good); }
+.audit-type.response { background: var(--surface-soft); border-color: var(--border); color: var(--warning, var(--ink-2)); }
 
 /* ====================================================================
    Mobile
@@ -723,7 +1001,7 @@ onMounted(loadAll)
   .table-head span:nth-child(6),
   .table-row > :nth-child(3),
   .table-row > :nth-child(6) { display: none; }
-  .audit-row { grid-template-columns: 80px 60px 1fr; }
-  .audit-row > :nth-child(3) { display: none; }
+  .audit-row { grid-template-columns: 80px 1fr; }
+  .audit-row > :nth-child(2) { display: none; }  /* hide type badge */
 }
 </style>

@@ -29,6 +29,38 @@ const preview = computed(() =>
 const html = computed(() => md.render(preview.value))
 
 const isUser = computed(() => props.role === 'user')
+
+// ---- Copy-to-clipboard ---------------------------------------------------
+// Copies the raw markdown source, not the rendered HTML. Bypasses any
+// collapsed-preview suffix the long-message fold logic appends.
+const copyState = ref<'idle' | 'copied' | 'failed'>('idle')
+let copyTimer: ReturnType<typeof setTimeout> | undefined
+
+async function copyText() {
+  const text = unescapedText.value
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // Fallback for non-secure contexts (HTTP / older browsers)
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copyState.value = 'copied'
+  } catch {
+    copyState.value = 'failed'
+  } finally {
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => { copyState.value = 'idle' }, 1600)
+  }
+}
 </script>
 
 <template>
@@ -37,6 +69,17 @@ const isUser = computed(() => props.role === 'user')
     @click="long && (collapsed = !collapsed)"
     :style="long ? { cursor: 'pointer' } : {}"
   >
+    <button
+      class="copy-btn mono"
+      :class="{ 'is-copied': copyState === 'copied', 'is-failed': copyState === 'failed' }"
+      :title="copyState === 'copied' ? '已复制' : '复制原始内容'"
+      :aria-label="copyState === 'copied' ? '已复制' : '复制原始内容'"
+      @click.stop="copyText"
+    >
+      <span v-if="copyState === 'copied'">✓ 已复制</span>
+      <span v-else-if="copyState === 'failed'">× 失败</span>
+      <span v-else>⧉ 复制</span>
+    </button>
     <div v-if="long && collapsed" class="fold-hint">
       <span class="caret">▸</span> 展开全部内容
     </div>
@@ -78,6 +121,53 @@ const isUser = computed(() => props.role === 'user')
   background: var(--brand-soft);
 }
 .fold-hint .caret { font-size: 10px; }
+
+/* ---- copy button (top-right, hover-reveal) ---- */
+.copy-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2;
+  padding: 3px 9px;
+  font-size: 10px;
+  line-height: 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-mute);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out),
+              color var(--dur-fast) var(--ease-out),
+              border-color var(--dur-fast) var(--ease-out),
+              background var(--dur-fast) var(--ease-out);
+}
+.msg:hover .copy-btn,
+.copy-btn:focus-visible,
+.copy-btn.is-copied,
+.copy-btn.is-failed {
+  opacity: 1;
+}
+.copy-btn:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+}
+.copy-btn.is-copied {
+  color: var(--brand);
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  opacity: 1;
+}
+.copy-btn.is-failed {
+  color: var(--warn);
+  border-color: var(--warn);
+  background: var(--warn-soft);
+  opacity: 1;
+}
+/* Always show on touch / coarse pointers (no hover) */
+@media (hover: none) {
+  .copy-btn { opacity: 0.7; }
+}
 
 /* ---- rendered markdown ---- */
 .msg-body :deep(p) { margin: 0 0 10px; }

@@ -145,7 +145,7 @@ describe("tools.approvalMode setting", () => {
 		});
 		const result = await bashTool().execute(
 			"critical",
-			{ command: "rm -f /tmp/bun-fake-timer-probe.test.ts" },
+			{ command: "rm -f ./bun-fake-timer-probe.test.ts" },
 			undefined,
 			undefined,
 			{
@@ -168,7 +168,7 @@ describe("tools.approvalMode setting", () => {
 		const settings = approvalSettings({ "tools.approvalMode": "always-ask" });
 		const result = await bashTool().execute(
 			"cli-critical",
-			{ command: "rm -f /tmp/bun-fake-timer-probe.test.ts" },
+			{ command: "rm -f ./bun-fake-timer-probe.test.ts" },
 			undefined,
 			undefined,
 			{

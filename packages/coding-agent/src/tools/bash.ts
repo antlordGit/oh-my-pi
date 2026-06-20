@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type {
 	AgentTool,
 	AgentToolContext,
@@ -25,7 +26,7 @@ import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { applyBashFixups } from "./bash-command-fixup";
 import { type BashInteractiveResult, runInteractiveBashPty } from "./bash-interactive";
-import { checkBashInterception } from "./bash-interceptor";
+import { checkBashCwdPath, checkBashInterception } from "./bash-interceptor";
 import { canUseInteractiveBashPty } from "./bash-pty-selection";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
@@ -755,6 +756,24 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 
 		const commandCwd = cwd ? resolveToCwd(cwd, this.session.cwd) : this.session.cwd;
 		assertWithinCwd(commandCwd, this.session.cwd, "bash cwd");
+
+		// Workspace path-boundary guard: scan the full command for file paths that
+		// would escape the workspace. Runs after cwd extraction and internal-URL
+		// expansion so the tokenizer sees the final command string and the final
+		// commandCwd. Absolute paths (`/etc/passwd`) and `..`-bearing relative
+		// paths are both covered; shell expansions/backticks are left to runtime —
+		// static scanning of those would wrongly block legitimate commands.
+		const cwdViolation = checkBashCwdPath(command, commandCwd);
+		if (cwdViolation.block) {
+			const absCwd = path.resolve(commandCwd);
+			throw new ToolError(
+				`Access denied: bash command targets a path outside the workspace. ` +
+					`The path '${cwdViolation.offendingPath}' is outside workspace '${absCwd}'. ` +
+					`Only files inside the workspace can be accessed. Use read/write/edit/find/search tools or ` +
+					`relative paths inside the workspace.`,
+			);
+		}
+
 		let cwdStat: fs.Stats;
 		try {
 			cwdStat = await fs.promises.stat(commandCwd);

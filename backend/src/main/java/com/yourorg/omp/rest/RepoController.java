@@ -56,11 +56,36 @@ public class RepoController {
         return workspace.listFiles(uid, repoId);
     }
 
-    @GetMapping("/{repoId}/files/**")
-    public Map<String, String> file(@PathVariable String repoId, @RequestParam(required = false) String path) throws Exception {
+    /**
+     * Tree view of the workspace, used by the chat page right sidebar.
+     * {@code depth} is the number of directory levels to include (1 = root only).
+     * Hidden directories (.git, node_modules, etc.) are skipped server-side.
+     */
+    @GetMapping("/{repoId}/tree")
+    public List<com.yourorg.omp.workspace.WorkspaceService.TreeNode> tree(
+            @PathVariable String repoId,
+            @RequestParam(defaultValue = "2") int depth) throws Exception {
         Long uid = currentUser.requireId();
-        String p = path != null ? path : repoId;
-        return Map.of("path", p, "content", workspace.readFile(uid, repoId, p));
+        return workspace.listTree(uid, repoId, depth);
+    }
+
+    @GetMapping("/{repoId}/file")
+    public Map<String, String> getFile(@PathVariable String repoId, @RequestParam String path) throws Exception {
+        Long uid = currentUser.requireId();
+        return Map.of("path", path, "content", workspace.readFile(uid, repoId, path));
+    }
+
+    /** Write back a file into the workspace, guarded by boundary checks. */
+    @PutMapping("/{repoId}/file")
+    public Map<String, Object> writeFile(
+            @PathVariable String repoId,
+            @RequestParam String path,
+            @RequestBody Map<String, String> body) throws Exception {
+        Long uid = currentUser.requireId();
+        String content = body.get("content");
+        if (content == null) throw new IllegalArgumentException("content is required");
+        workspace.writeFile(uid, repoId, path, content);
+        return Map.of("ok", true, "path", path);
     }
 
     @GetMapping("/{repoId}/diff")

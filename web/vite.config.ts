@@ -13,11 +13,15 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': 'http://localhost:8080',
-      '/admin': 'http://localhost:8080',
+      // Proxy only the real backend admin API paths — NOT the SPA route /admin itself.
+      // Without this restriction a browser refresh of /admin hits the backend directly.
+      '^/admin/(sessions|config|audit|pool)': 'http://localhost:8080',
       '/ws': {
         target: 'ws://localhost:8080',
         ws: true,
       },
     },
+    // SPA history fallback: serve index.html for any path not matched by a file or proxy rule
+    historyApiFallback: true,
   },
 })

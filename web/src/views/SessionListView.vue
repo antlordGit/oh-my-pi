@@ -65,13 +65,32 @@ async function onCreateSession() {
   } catch (e: any) { msg.error(e?.response?.data?.error || '创建失败') }
 }
 
+const OVERRIDES_KEY = 'omp.admin.sessionOverrides'
+function setOverride(id: string, status: 'active' | 'archived') {
+  try {
+    const m = JSON.parse(sessionStorage.getItem(OVERRIDES_KEY) || '{}') as Record<string, string>
+    m[id] = status
+    sessionStorage.setItem(OVERRIDES_KEY, JSON.stringify(m))
+  } catch {}
+}
+
 async function onArchive(id: string) {
-  try { await archive(id); msg.success('已归档'); await refresh() }
+  try {
+    await archive(id)
+    // Keep the shared override in step so the row doesn't snap back to its
+    // stale value (the admin control room writes the same key).
+    setOverride(id, 'archived')
+    msg.success('已归档'); await refresh()
+  }
   catch (e: any) { msg.error(e?.response?.data?.error || '归档失败') }
 }
 
 async function onUnarchive(id: string) {
-  try { await unarchive(id); msg.success('已恢复'); await refresh() }
+  try {
+    await unarchive(id)
+    setOverride(id, 'active')
+    msg.success('已恢复'); await refresh()
+  }
   catch (e: any) { msg.error(e?.response?.data?.error || '恢复失败') }
 }
 
@@ -79,7 +98,7 @@ function effectiveStatus(s: SessionSummary): 'active' | 'archived' {
   // Prefer admin-side optimistic override (persisted in sessionStorage) --
   // keyed by full UUID; also match on the first 8 chars of the sessionId
   // so that both views can find the same override entry.
-  const key = 'omp.admin.sessionOverrides'
+  const key = OVERRIDES_KEY
   try {
     const overrides = JSON.parse(sessionStorage.getItem(key) || '{}') as Record<string, string>
     const entry = overrides[s.sessionId]
@@ -111,14 +130,6 @@ onMounted(refresh)
         <span class="brand-name">OMP</span>
       </div>
 
-      <nav class="nav-links">
-        <a class="nav-link active">工作台</a>
-        <a class="nav-link">模型</a>
-        <a class="nav-link">解决方案</a>
-        <a class="nav-link">定价</a>
-        <a class="nav-link">文档</a>
-      </nav>
-
       <div class="nav-search">
         <span class="search-icon">⌕</span>
         <input class="search-input" placeholder="搜索会话、仓库" />
@@ -137,24 +148,44 @@ onMounted(refresh)
       </div>
     </header>
 
-    <!-- Hero stats -->
+    <!-- Hero stats — terminal instrumentation -->
     <section class="hero-stats-section fade-up" style="animation-delay:160ms">
       <div class="hero-stats">
-        <div class="stat-cell">
-          <span class="serial">活跃</span>
-          <span class="big-num">{{ String(activeCount).padStart(2, '0') }}</span>
+        <div class="stat-cell stat-active">
+          <div class="stat-ring">
+            <span class="stat-glow active"></span>
+            <span class="big-num">{{ String(activeCount).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="stat-dot live"></span>
+            <span class="serial">活跃</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">归档</span>
-          <span class="big-num">{{ String(archivedCount).padStart(2, '0') }}</span>
+        <div class="stat-cell stat-archived">
+          <div class="stat-ring">
+            <span class="stat-glow archived"></span>
+            <span class="big-num">{{ String(archivedCount).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="stat-dot frozen"></span>
+            <span class="serial">归档</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">仓库</span>
-          <span class="big-num">{{ String(repos.length).padStart(2, '0') }}</span>
+        <div class="stat-cell stat-repos">
+          <div class="stat-ring">
+            <span class="big-num">{{ String(repos.length).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="serial">仓库</span>
+          </div>
         </div>
-        <div class="stat-cell">
-          <span class="serial">总数</span>
-          <span class="big-num">{{ String(totalSessions).padStart(2, '0') }}</span>
+        <div class="stat-cell stat-total">
+          <div class="stat-ring">
+            <span class="big-num">{{ String(totalSessions).padStart(2, '0') }}</span>
+          </div>
+          <div class="stat-foot">
+            <span class="serial">总数</span>
+          </div>
         </div>
       </div>
     </section>
@@ -293,15 +324,6 @@ onMounted(refresh)
 }
 .brand-name { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
 
-.nav-links { display: inline-flex; align-items: center; gap: 24px; }
-.nav-link {
-  font-size: 14px;
-  color: var(--ink-2);
-  cursor: pointer;
-  transition: color var(--dur-fast) var(--ease-out);
-}
-.nav-link:hover, .nav-link.active { color: var(--brand); }
-
 .nav-search {
   display: inline-flex;
   align-items: center;
@@ -334,41 +356,140 @@ onMounted(refresh)
 .nav-user .serial { color: var(--ink-2); }
 
 /* ====================================================================
-   Hero stats
+   Hero stats — instrumentation panel
    ==================================================================== */
 .hero-stats-section {
-  padding: 32px 0 16px;
+  padding: 24px 0 8px;
   position: relative;
   z-index: 1;
 }
 
 .hero-stats {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  background: linear-gradient(135deg,
-    rgba(22, 93, 255, 0.04) 0%,
-    rgba(123, 123, 255, 0.08) 100%);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-card);
-  padding: 20px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
 }
+
 .stat-cell {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 14px;
-  background: rgba(255, 255, 255, 0.6);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  align-items: center;
+  gap: 14px;
+  padding: 28px 16px 22px;
+  background: var(--surface);
+  position: relative;
 }
-.big-num {
-  font-family: var(--font-display);
-  font-size: clamp(32px, 3vw, 44px);
-  font-weight: 800;
-  letter-spacing: -0.025em;
-  color: var(--brand);
+
+.stat-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+}
+
+/* subtle outer ring */
+.stat-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--border);
+}
+
+.stat-glow {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  z-index: -1;
+  opacity: 0;
+}
+
+.stat-glow.active {
+  background: radial-gradient(circle, rgba(34, 197, 94, 0.18) 0%, transparent 70%);
+  animation: stat-pulse 3.5s var(--ease-out) infinite;
+}
+
+.stat-glow.archived {
+  background: radial-gradient(circle, rgba(134, 144, 156, 0.12) 0%, transparent 70%);
+}
+
+@keyframes stat-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.stat-cell .big-num {
+  font-family: var(--font-mono);
+  font-size: clamp(36px, 3.6vw, 48px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
   line-height: 1;
+  position: relative;
+  z-index: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--brand);
+}
+
+/* Active — green */
+.stat-active .big-num {
+  color: #16A34A;
+}
+
+/* Archived — muted slate */
+.stat-archived .big-num {
+  color: var(--ink-mute);
+}
+
+.stat-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-mute);
+}
+
+.stat-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+
+.stat-dot.live {
+  background: #16A34A;
+  box-shadow: 0 0 6px rgba(22, 163, 74, 0.35);
+  animation: stat-pulse 3.5s var(--ease-out) infinite;
+}
+
+.stat-dot.frozen { background: var(--ink-mute); }
+
+/* ====================================================================
+   Mobile collapse
+   ==================================================================== */
+@media (max-width: 900px) {
+  .hero-stats {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .stat-cell {
+    padding: 20px 14px 18px;
+    gap: 10px;
+  }
+  .stat-ring {
+    width: 72px;
+    height: 72px;
+  }
+  .stat-cell .big-num {
+    font-size: 32px;
+  }
 }
 
 /* ====================================================================
@@ -522,7 +643,7 @@ onMounted(refresh)
 @media (max-width: 900px) {
   .page { padding: 0 16px 48px; }
   .topbar { flex-wrap: wrap; gap: 12px; }
-  .nav-links, .nav-search { display: none; }
+  .nav-search { display: none; }
   .nav-actions { margin-left: 0; width: 100%; justify-content: flex-end; }
   .hero-stats-section { padding: 16px 0 8px; }
   .creator-grid { grid-template-columns: 1fr; }

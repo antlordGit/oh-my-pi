@@ -22,9 +22,14 @@ export async function listFiles(repoId: string): Promise<string[]> {
   return r.data
 }
 
-export async function diff(repoId: string, refA: string, refB: string): Promise<string> {
-  const r = await api.get(`/api/repos/${repoId}/diff`, { params: { refA, refB } })
-  return r.data.diff
+export async function readFile(repoId: string, path: string): Promise<{path: string; content: string}> {
+  const r = await api.get(`/api/repos/${repoId}/file`, { params: { path } })
+  return r.data
+}
+
+export async function writeFile(repoId: string, path: string, content: string): Promise<{ok: boolean; path: string}> {
+  const r = await api.put(`/api/repos/${repoId}/file`, { content }, { params: { path } })
+  return r.data
 }
 
 export async function log(repoId: string, n = 20): Promise<string> {

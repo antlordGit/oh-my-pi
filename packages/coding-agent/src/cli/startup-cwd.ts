@@ -56,6 +56,18 @@ async function maybeAutoChdir(parsed: Args): Promise<void> {
 
 export async function applyStartupCwd(parsed: Args): Promise<void> {
 	if (parsed.cwd) {
+		// Validate up front so a missing --cwd surfaces a clear message instead of
+		// a raw ENOENT chdir stack trace from setProjectDir.
+		const resolvedCwd = path.resolve(parsed.cwd);
+		let stat: Awaited<ReturnType<typeof fs.stat>> | undefined;
+		try {
+			stat = await fs.stat(resolvedCwd);
+		} catch {
+			throw new Error(`--cwd directory does not exist: ${resolvedCwd}`);
+		}
+		if (!stat.isDirectory()) {
+			throw new Error(`--cwd is not a directory: ${resolvedCwd}`);
+		}
 		setProjectDir(parsed.cwd);
 		// setProjectDir resolves the (possibly relative) target against the launch
 		// cwd and chdirs into it. Re-sync parsed.cwd to the resolved absolute path

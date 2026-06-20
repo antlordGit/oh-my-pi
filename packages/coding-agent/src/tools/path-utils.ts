@@ -425,7 +425,7 @@ export function assertWithinCwd(resolvedPath: string, cwd: string, context: stri
 	}
 	throw new ToolError(
 		`Access denied: ${context} path '${absPath}' is outside workspace '${absCwd}'. ` +
-			`Supply a path inside the workspace, or use an internal URL (e.g. local://, vault://) for scratch space.`,
+			`Only files inside the workspace can be accessed. To access files outside, copy them into the workspace first.`,
 	);
 }
 
