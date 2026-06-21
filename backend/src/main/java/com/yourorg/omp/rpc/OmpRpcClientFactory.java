@@ -49,11 +49,13 @@ public class OmpRpcClientFactory {
         String provider = props.defaultModel().provider();
         String modelId = props.defaultModel().modelId();
         String baseUrl = null;
+        String api = null;  // e.g. "anthropic-messages", "openai-completions"
         var mc = adminConfig.modelConfig();
         if (mc.isPresent()) {
             if (mc.get().provider() != null) provider = mc.get().provider();
             if (mc.get().modelId() != null) modelId = mc.get().modelId();
             if (mc.get().baseUrl() != null) baseUrl = mc.get().baseUrl();
+            if (mc.get().api() != null) api = mc.get().api();
         }
 
         OmpProcessSpec spec = new OmpProcessSpec(
@@ -72,7 +74,8 @@ public class OmpRpcClientFactory {
                 props.defaultFlags().noTui(),
                 provider,
                 modelId,
-                baseUrl
+                baseUrl,
+                api
         );
         return OmpRpcClient.start(sessionId, spec, Duration.ofSeconds(30));
     }

@@ -39,7 +39,7 @@ public class AuthController {
         try {
             authManager.authenticate(new UsernamePasswordAuthenticationToken(req.username(), req.password()));
         } catch (BadCredentialsException | DisabledException e) {
-            throw new RuntimeException("Invalid credentials");
+            throw new RuntimeException("用户名或密码错误");
         }
         User u = users.findByUsername(req.username()).orElseThrow();
         u.setLastLoginAt(Instant.now());

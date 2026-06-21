@@ -32,7 +32,8 @@ public record OmpProcessSpec(
         boolean noTui,
         String provider,
         String modelId,
-        String baseUrl
+        String baseUrl,
+        String api  // e.g. "anthropic-messages", "openai-completions"
 ) {
     public OmpProcessSpec {
         env = env == null ? Map.of() : Map.copyOf(env);
@@ -100,11 +101,19 @@ public record OmpProcessSpec(
         Map<String, String> m = new HashMap<>(env);
         m.put("PI_CODING_AGENT_DIR", agentDir.toAbsolutePath().toString());
         m.putIfAbsent("PI_NOTIFICATIONS", "off");
-        // Override OpenAI base URL (used when omp's provider is "openai-completions").
-        // This is how we route to DeepSeek (which speaks the OpenAI Chat Completions protocol).
+
+        // Set base URL env var according to the API protocol so the OMP process
+        // resolves the correct backend host (e.g. an Anthropic-compatible proxy
+        // backed by xunfei needs its baseUrl via ANTHROPIC_BASE_URL, not
+        // OPENAI_BASE_URL).
         if (baseUrl != null && !baseUrl.isBlank()) {
-            m.put("OPENAI_BASE_URL", baseUrl);
+            if ("anthropic-messages".equals(api)) {
+                m.put("ANTHROPIC_BASE_URL", baseUrl);
+            } else {
+                m.put("OPENAI_BASE_URL", baseUrl);
+            }
         }
+
         return m;
     }
 }

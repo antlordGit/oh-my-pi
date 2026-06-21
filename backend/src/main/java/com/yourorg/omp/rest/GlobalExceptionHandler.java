@@ -17,20 +17,20 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> badRequest(IllegalArgumentException e) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                .body(Map.of("error", e.getMessage() == null ? "bad request" : e.getMessage()));
+                .body(Map.of("error", e.getMessage() == null ? "请求参数错误" : e.getMessage()));
     }
 
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<Map<String, Object>> conflict(IllegalStateException e) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(Map.of("error", e.getMessage() == null ? "conflict" : e.getMessage()));
+                .body(Map.of("error", e.getMessage() == null ? "操作冲突" : e.getMessage()));
     }
 
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<Map<String, Object>> internal(RuntimeException e) {
         log.error("unhandled runtime exception", e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(Map.of("error", e.getMessage() == null ? "internal error" : e.getMessage()));
+                .body(Map.of("error", e.getMessage() == null ? "服务器内部错误" : e.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)

@@ -67,7 +67,7 @@ public class OmpRpcClient implements AutoCloseable {
         try {
             this.stdin = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
         } catch (Exception e) {
-            throw new RuntimeException("Failed to open omp stdin", e);
+            throw new RuntimeException("无法打开 omp 标准输入流", e);
         }
         this.reader = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "omp-rpc-reader-" + sessionId);
@@ -121,15 +121,15 @@ public class OmpRpcClient implements AutoCloseable {
             boolean got = readyLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
             if (!got) {
                 if (process.isAlive()) process.destroyForcibly();
-                throw new OmpStartupException("Timed out waiting for omp ready frame");
+                throw new OmpStartupException("等待 omp 就绪帧超时");
             }
             if (startupError != null) {
                 if (process.isAlive()) process.destroyForcibly();
-                throw new OmpStartupException("omp startup failed", startupError);
+                throw new OmpStartupException("omp 启动失败", startupError);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new OmpStartupException("Interrupted waiting for ready", e);
+            throw new OmpStartupException("等待就绪时被中断", e);
         }
     }
 

@@ -74,7 +74,7 @@ public class AdminConfigService {
         try {
             c.setConfigValue(mapper.writeValueAsString(value));
         } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException("Config value not serializable", e);
+            throw new IllegalArgumentException("配置值无法序列化", e);
         }
         c.setDescription(description);
         c.setUpdatedAt(Instant.now());

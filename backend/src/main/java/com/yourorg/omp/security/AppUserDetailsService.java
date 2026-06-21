@@ -22,7 +22,7 @@ public class AppUserDetailsService implements UserDetailsService {
     @Override
     public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
         User u = users.findByUsername(username)
-                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + username));
+                .orElseThrow(() -> new UsernameNotFoundException("用户不存在: " + username));
         return new org.springframework.security.core.userdetails.User(
                 u.getUsername(),
                 u.getPasswordHash(),

@@ -52,7 +52,7 @@ public class WorkspaceService {
             Files.createDirectories(props.workspacesRoot());
             Files.createDirectories(props.agentRoot());
         } catch (IOException e) {
-            throw new RuntimeException("Failed to create omp root directories", e);
+            throw new RuntimeException("创建 omp 根目录失败", e);
         }
     }
 
@@ -62,13 +62,13 @@ public class WorkspaceService {
      */
     private String resolveUsername(Long userId) {
         User user = users.findById(userId)
-                .orElseThrow(() -> new IllegalArgumentException("User not found: " + userId));
+                .orElseThrow(() -> new IllegalArgumentException("用户不存在: " + userId));
         String username = user.getUsername();
         if (username == null || username.isBlank()) {
-            throw new IllegalArgumentException("User has no username: " + userId);
+            throw new IllegalArgumentException("用户未设置用户名: " + userId);
         }
         if (!PATH_ID_PATTERN.matcher(username).matches()) {
-            throw new IllegalArgumentException("Username contains invalid characters: " + username);
+            throw new IllegalArgumentException("用户名包含非法字符: " + username);
         }
         return username;
     }
@@ -98,7 +98,7 @@ public class WorkspaceService {
             initGitIfNeeded(p);
             seedModelsConfig(userAgentDir(userId));
         } catch (IOException e) {
-            throw new RuntimeException("Failed to prepare workspace " + p, e);
+            throw new RuntimeException("准备 workspace 失败: " + p, e);
         }
         return p;
     }
@@ -110,7 +110,7 @@ public class WorkspaceService {
             Files.createDirectories(p);
             seedModelsConfig(p);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to prepare agent dir " + p, e);
+            throw new RuntimeException("准备 agent 目录失败: " + p, e);
         }
         return p;
     }
@@ -238,7 +238,7 @@ public class WorkspaceService {
         Path root = userWorkspace(userId, repoId);
         Path file = root.resolve(relativePath).normalize();
         if (!file.startsWith(root)) {
-            throw new IOException("Path escapes workspace");
+            throw new IOException("路径超出工作区范围");
         }
         return Files.readString(file);
     }
@@ -247,10 +247,10 @@ public class WorkspaceService {
         Path root = userWorkspace(userId, repoId);
         Path file = root.resolve(relativePath).normalize();
         if (!file.startsWith(root)) {
-            throw new IOException("Path escapes workspace");
+            throw new IOException("路径超出工作区范围");
         }
         if (!Files.exists(file)) {
-            throw new IOException("File does not exist: " + relativePath);
+            throw new IOException("文件不存在: " + relativePath);
         }
         Files.writeString(file, content);
     }
@@ -303,7 +303,7 @@ public class WorkspaceService {
                         Files.copy(src, dst, StandardCopyOption.COPY_ATTRIBUTES);
                     }
                 } catch (IOException e) {
-                    throw new RuntimeException("Failed to copy: " + src, e);
+                    throw new RuntimeException("复制失败: " + src, e);
                 }
             });
 
@@ -314,7 +314,7 @@ public class WorkspaceService {
         } catch (RuntimeException e) {
             throw e;
         } catch (Exception e) {
-            throw new RuntimeException("Failed to copy workspace", e);
+            throw new RuntimeException("复制工作区失败", e);
         }
     }
 
@@ -341,13 +341,13 @@ public class WorkspaceService {
                         try {
                             Files.delete(p);
                         } catch (IOException e) {
-                            throw new RuntimeException("Failed to delete: " + p, e);
+                            throw new RuntimeException("删除失败: " + p, e);
                         }
                     });
             }
             log.info("Deleted workspace {} for user {}", repoId, userId);
         } catch (IOException e) {
-            throw new RuntimeException("Failed to delete workspace", e);
+            throw new RuntimeException("删除工作区失败", e);
         }
     }
 

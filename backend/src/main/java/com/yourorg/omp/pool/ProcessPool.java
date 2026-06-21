@@ -94,7 +94,7 @@ public class ProcessPool {
             } catch (IOException | OmpStartupException e) {
                 slots.release();
                 log.error("[pool.acquire] session={} spawn FAILED: {}", sessionId, e.getMessage());
-                throw new RuntimeException("Failed to spawn omp for session " + sessionId, e);
+                throw new RuntimeException("为会话启动 omp 进程失败: " + sessionId, e);
             }
             Entry entry = new Entry(client, Instant.now());
             active.put(sessionId, entry);

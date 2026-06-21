@@ -100,7 +100,7 @@ public class AdminController {
     @PostMapping("/users")
     public Map<String, Object> createUser(@RequestBody CreateUserRequest req) {
         if (users.existsByUsername(req.username())) {
-            throw new IllegalArgumentException("User already exists");
+            throw new IllegalArgumentException("用户名已存在");
         }
         User u = new User();
         u.setUsername(req.username());

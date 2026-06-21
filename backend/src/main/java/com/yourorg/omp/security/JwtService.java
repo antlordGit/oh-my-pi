@@ -53,7 +53,7 @@ public class JwtService {
     public void init() {
         byte[] secret = jwtSecret.getBytes(StandardCharsets.UTF_8);
         if (secret.length < 32) {
-            throw new IllegalStateException("app.omp.security.jwt-secret must be at least 32 chars (HS256)");
+            throw new IllegalStateException("JWT 密钥长度不能少于 32 个字符 (HS256)");
         }
         this.key = Keys.hmacShaKeyFor(secret);
         bootstrapAdmin();

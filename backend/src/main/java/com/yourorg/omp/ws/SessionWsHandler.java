@@ -66,7 +66,7 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
             return;
         }
         var meta = sessions.findScoped(sessionId, currentUser.scope())
-                .orElseThrow(() -> new IllegalStateException("Forbidden"));
+                .orElseThrow(() -> new IllegalStateException("无权访问该会话"));
         // Ensure the omp client is alive (spawn if needed) so EventBus starts receiving frames.
         sessions.acquireClient(meta);
         // Subscribe ONLY to EventBus — the ProcessPool's fanout already publishes every frame
@@ -155,7 +155,7 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
         String path = uri.getPath();
         String prefix = "/ws/sessions/";
         int idx = path.indexOf(prefix);
-        if (idx < 0) throw new IllegalArgumentException("Invalid WS path: " + path);
+        if (idx < 0) throw new IllegalArgumentException("无效的 WebSocket 路径: " + path);
         String tail = path.substring(idx + prefix.length());
         int slash = tail.indexOf('/');
         return slash < 0 ? tail : tail.substring(0, slash);

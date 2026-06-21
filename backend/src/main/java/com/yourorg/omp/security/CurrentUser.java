@@ -18,10 +18,10 @@ public class CurrentUser {
     public User require() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || auth.getName() == null) {
-            throw new IllegalStateException("No authenticated user in context");
+            throw new IllegalStateException("未找到认证用户");
         }
         return users.findByUsername(auth.getName())
-                .orElseThrow(() -> new IllegalStateException("Authenticated user not found: " + auth.getName()));
+                .orElseThrow(() -> new IllegalStateException("认证用户不存在: " + auth.getName()));
     }
 
     public Long requireId() {

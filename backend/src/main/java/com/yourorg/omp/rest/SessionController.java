@@ -61,7 +61,7 @@ public class SessionController {
         Long uid = self.getId();
         long active = sessions.countActiveByUser(uid);
         if (active >= props.perUserSessionLimit()) {
-            throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
+            throw new RuntimeException("当前用户会话数已达上限 (" + props.perUserSessionLimit() + ")");
         }
         SessionMeta m = sessions.create(uid, self.getTenantId(), req.repoId(), req.title());
         // Eagerly attach audit so the first events are captured.
@@ -72,7 +72,7 @@ public class SessionController {
     @GetMapping("/{sessionId}")
     public Map<String, Object> get(@PathVariable String sessionId) {
         SessionMeta m = sessions.findScoped(sessionId, currentUser.scope())
-                .orElseThrow(() -> new RuntimeException("Session not found"));
+                .orElseThrow(() -> new RuntimeException("会话不存在"));
         return toDto(m);
     }
 
@@ -179,7 +179,7 @@ public class SessionController {
         SessionMeta m = require(sessionId);
         long active = sessions.countActiveByUser(m.getUserId());
         if (active >= props.perUserSessionLimit()) {
-            throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
+            throw new RuntimeException("当前用户会话数已达上限 (" + props.perUserSessionLimit() + ")");
         }
         sessions.unarchive(sessionId);
         return Map.of("ok", true);
@@ -194,7 +194,7 @@ public class SessionController {
         SessionMeta m = require(sessionId);
         long active = sessions.countActiveByUser(m.getUserId());
         if (active >= props.perUserSessionLimit()) {
-            throw new RuntimeException("Per-user session limit reached (" + props.perUserSessionLimit() + ")");
+            throw new RuntimeException("当前用户会话数已达上限 (" + props.perUserSessionLimit() + ")");
         }
         sessions.unarchive(sessionId);
         m.setStatus("active");
@@ -205,7 +205,7 @@ public class SessionController {
 
     private SessionMeta require(String sessionId) {
         return sessions.findScoped(sessionId, currentUser.scope())
-                .orElseThrow(() -> new RuntimeException("Session not found"));
+                .orElseThrow(() -> new RuntimeException("会话不存在"));
     }
 
     private Map<String, Object> toDto(SessionMeta m) {
