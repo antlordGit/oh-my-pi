@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, provide, computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted, provide, computed, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { listUsers, listTenants, listRoles, listMenus, listModelConfigs } from '@/api/system'
 import UserList from './user/UserList.vue'
@@ -11,6 +11,7 @@ import ModelConfigList from './model/ModelConfigList.vue'
 import AdminView from '@/views/admin/AdminView.vue'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 
 type TabKey = 'user' | 'tenant' | 'role' | 'menu' | 'model' | 'admin-config' | 'admin-sessions' | 'admin-audit'
@@ -29,6 +30,16 @@ const ALL_TABS: { key: TabKey; label: string; num: string; perm: string; group: 
 
 const visibleTabs = computed(() => ALL_TABS.filter(t => auth.hasPerm(t.perm)))
 const activeTab = ref<TabKey>('admin-config')
+
+// 根据路由 query.tab 同步激活的 Tab（顶部菜单导航传入）
+function syncTabFromRoute() {
+  const q = route.query.tab as string | undefined
+  if (!q) return
+  const matched = visibleTabs.value.find(t => t.key === q)
+  if (matched) activeTab.value = matched.key
+}
+
+watch(() => route.query.tab, syncTabFromRoute)
 
 // Map admin sub-tab keys to the initial tab passed to AdminView
 const adminInitialTab = computed<'config' | 'sessions' | 'audit' | undefined>(() => {
@@ -79,6 +90,8 @@ onMounted(() => {
   if (!visibleTabs.value.some(t => t.key === activeTab.value)) {
     activeTab.value = visibleTabs.value[0].key
   }
+  // 路由带 tab 参数时优先同步
+  syncTabFromRoute()
   refreshStats()
 })
 </script>

@@ -484,6 +484,14 @@ watch(() => route.query.tab, (v) => {
   if (v === 'config' || v === 'sessions' || v === 'audit') tab.value = v
 })
 
+// 切换到某个 Tab 时重新拉取对应数据，保证看到最新状态
+// （如在「模型配置」激活模型后回到「运行时配置」能看到 model.active 更新）
+watch(tab, (v) => {
+  if (v === 'config') loadConfig()
+  else if (v === 'sessions') loadSessions()
+  else if (v === 'audit') loadAudit()
+})
+
 onMounted(() => {
   // 嵌入模式：保留外层 prop 传入的 Tab。
   // 独立路由：若 query 未显式指定 tab，则按权限选第一个可见 Tab 兜底。

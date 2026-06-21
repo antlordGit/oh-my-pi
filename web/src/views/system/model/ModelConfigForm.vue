@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { createModelConfig, updateModelConfig, type ModelConfigInfo, type CreateModelConfigParams, type UpdateModelConfigParams } from '@/api/system'
 
@@ -20,6 +20,22 @@ const remark = ref(props.config?.remark || '')
 const editMode = !!props.config
 const showApiKey = ref(false)
 
+// models 数组字段（用于生成完整 JSON）
+const maxTokens = ref<number>(8192)
+const contextWindow = ref<number>(128000)
+
+// 编辑模式：尝试从已有 configJson 回填 maxTokens / contextWindow
+if (editMode && configJson.value) {
+  try {
+    const parsed = JSON.parse(configJson.value)
+    const m = Array.isArray(parsed.models) ? parsed.models[0] : null
+    if (m) {
+      if (typeof m.maxTokens === 'number') maxTokens.value = m.maxTokens
+      if (typeof m.contextWindow === 'number') contextWindow.value = m.contextWindow
+    }
+  } catch { /* 忽略解析失败 */ }
+}
+
 /** OMP 支持的 API 协议（对应 catalog 的 KnownApi）。 */
 const API_OPTIONS = [
   'openai-completions',
@@ -35,6 +51,46 @@ const API_OPTIONS = [
   'cursor-agent',
 ]
 
+/**
+ * 根据表单字段重建完整配置 JSON。
+ * 保留用户在 JSON 中手动添加的高级键（discovery / modelOverrides 等）。
+ */
+function rebuildJson() {
+  let extra: Record<string, unknown> = {}
+  if (configJson.value.trim()) {
+    try {
+      const parsed = JSON.parse(configJson.value)
+      if (parsed && typeof parsed === 'object') {
+        // 剔除由字段托管的基础键，其余保留
+        const { api: _a, apiKey: _k, models: _m, baseUrl: _b, provider: _p, ...rest } = parsed
+        extra = rest
+      }
+    } catch { /* 解析失败则忽略已有内容 */ }
+  }
+
+  const obj: Record<string, unknown> = {}
+  if (api.value) obj.api = api.value
+  if (apiKey.value) obj.apiKey = apiKey.value
+  if (modelId.value) {
+    obj.models = [{
+      id: modelId.value,
+      name: displayName.value || modelId.value,
+      maxTokens: maxTokens.value,
+      contextWindow: contextWindow.value,
+    }]
+  }
+  if (baseUrl.value) obj.baseUrl = baseUrl.value
+  if (provider.value) obj.provider = provider.value
+
+  configJson.value = JSON.stringify({ ...obj, ...extra }, null, 2)
+}
+
+// 任一基础字段变化时，自动重建 JSON 并展示
+watch([api, apiKey, modelId, displayName, baseUrl, provider, maxTokens, contextWindow], rebuildJson)
+
+// 新增模式下初始化一次，让 JSON 即时反映默认值
+if (!editMode) rebuildJson()
+
 /** 清空表单（编辑模式下保留配置名称，因为它不可改）。 */
 function handleReset() {
   if (!editMode) configName.value = ''
@@ -44,6 +100,8 @@ function handleReset() {
   baseUrl.value = ''
   api.value = ''
   apiKey.value = ''
+  maxTokens.value = 8192
+  contextWindow.value = 128000
   configJson.value = ''
   remark.value = ''
 }
@@ -121,6 +179,16 @@ async function handleSubmit() {
             <span>Base URL</span>
             <input v-model="baseUrl" class="field-input" placeholder="例如 https://api.deepseek.com/v1" />
           </label>
+          <div class="field-row">
+            <label class="field" style="flex:1">
+              <span>Max Tokens</span>
+              <input v-model.number="maxTokens" type="number" class="field-input" placeholder="8192" />
+            </label>
+            <label class="field" style="flex:1">
+              <span>Context Window</span>
+              <input v-model.number="contextWindow" type="number" class="field-input" placeholder="128000" />
+            </label>
+          </div>
           <label class="field">
             <span>API 协议</span>
             <select v-model="api" class="field-input">
@@ -138,8 +206,8 @@ async function handleSubmit() {
             </div>
           </label>
           <label class="field">
-            <span>完整配置 JSON</span>
-            <textarea v-model="configJson" class="field-input mono" rows="8" placeholder='{"discovery":{"type":"openai-models-list"},"modelOverrides":{...}}' style="font-size:11px;resize:vertical" />
+            <span>完整配置 JSON <small style="color:var(--ink-mute);font-weight:normal">（随上方字段自动生成，也可手动微调）</small></span>
+            <textarea v-model="configJson" class="field-input mono" rows="10" placeholder='{"discovery":{"type":"openai-models-list"},"modelOverrides":{...}}' style="font-size:11px;resize:vertical" />
           </label>
           <label class="field">
             <span>备注</span>
@@ -178,6 +246,7 @@ async function handleSubmit() {
 .btn-close { background: none; border: 0; font-size: 16px; cursor: pointer; color: var(--ink-mute); }
 .modal-body { display: flex; flex-direction: column; gap: 14px; padding: 20px 24px; }
 .field { display: flex; flex-direction: column; gap: 6px; }
+.field-row { display: flex; gap: 14px; }
 .field span { font-size: 12px; font-weight: 500; color: var(--ink-2); }
 .field .req { color: var(--danger); font-style: normal; }
 .field-input {

@@ -87,6 +87,58 @@
 }
 
 /* =====================================================================
+   Dark theme — Industrial Command Center
+   ===================================================================== */
+
+[data-theme="dark"] {
+  --canvas:        #08090b;
+  --surface:       #0d0f12;
+  --surface-soft:  #111318;
+  --surface-hover: #1a1d24;
+  --surface-blue:  rgba(0, 229, 255, 0.04);
+
+  --border:        #1a1d24;
+  --border-strong: #252830;
+  --border-soft:   rgba(0, 229, 255, 0.12);
+
+  --ink:           #e8eaed;
+  --ink-2:         #8b919d;
+  --ink-mute:      #5a5f6b;
+  --ink-faint:     #2a2d34;
+  --ink-invert:    #08090b;
+
+  --brand:         #00e5ff;
+  --brand-hover:   #33ebff;
+  --brand-pressed: #00b8d4;
+  --brand-soft:    rgba(0, 229, 255, 0.08);
+  --brand-soft-2:  rgba(0, 229, 255, 0.14);
+  --brand-deep:    #00b8d4;
+
+  --good:          #00e676;
+  --good-soft:     rgba(0, 230, 118, 0.10);
+  --warn:          #ffb020;
+  --warn-soft:     rgba(255, 176, 32, 0.10);
+  --danger:        #f85252;
+  --danger-soft:   rgba(248, 82, 82, 0.10);
+
+  --shadow-card:   0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-hover:  0 6px 20px rgba(0, 0, 0, 0.4);
+  --shadow-brand:  0 6px 20px rgba(0, 229, 255, 0.15);
+  --shadow-focus:  0 0 0 3px rgba(0, 229, 255, 0.20);
+
+  --fg:         var(--ink);
+  --fg-mute:    var(--ink-2);
+  --fg-dim:     var(--ink-mute);
+  --fg-faint:   var(--ink-faint);
+  --bg:         var(--canvas);
+  --bg-soft:    var(--surface-soft);
+  --line-soft:  var(--border);
+  --line:       var(--border-strong);
+  --line-bold:  var(--ink-mute);
+  --bronze:     var(--warn);
+}
+
+/* =====================================================================
    Reset & base
    ===================================================================== */
 
