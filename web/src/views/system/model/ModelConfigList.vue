@@ -80,9 +80,9 @@ onMounted(load)
         <span style="width:40px">#</span>
         <span style="width:140px">配置名称</span>
         <span style="width:120px">显示名称</span>
-        <span style="width:100px">Provider</span>
-        <span style="width:140px">Model ID</span>
-        <span style="width:60px">状态</span>
+        <span style="width:100px">服务商</span>
+        <span style="width:140px">模型名称</span>
+        <span style="width:160px">状态</span>
         <span style="width:120px">创建时间</span>
         <span style="width:180px">操作</span>
       </div>
@@ -92,7 +92,7 @@ onMounted(load)
         <span style="width:120px" :title="c.displayName || ''">{{ c.displayName || '—' }}</span>
         <span class="mono" style="width:100px">{{ c.provider }}</span>
         <span class="mono dim" style="width:140px;font-size:11px" :title="c.modelId">{{ c.modelId }}</span>
-        <span style="width:60px">
+        <span style="width:160px">
           <span class="tag" :class="c.active ? 'tag-success' : 'tag-mute'">
             <span class="status-dot" :style="{ background: c.active ? 'var(--good)' : 'var(--ink-mute)' }"></span>
             {{ c.active ? '已激活' : '未激活' }}

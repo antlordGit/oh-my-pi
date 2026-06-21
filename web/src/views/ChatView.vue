@@ -276,6 +276,28 @@ function handleFrame(frame: any) {
         turnLog.value.push({ role: 'assistant', timeline: [...timeline.value] })
         timeline.value = []
       }
+      // 从 agent_end 携带的 messages 中提取错误，只展示友好提示
+      {
+        const raw: string = frame.errorMessage
+          || (Array.isArray(frame.messages) && frame.messages.find((m: any) => m?.errorMessage)?.errorMessage)
+          || ''
+        let friendly = raw
+        // 尝试解析 JSON 格式的额度/认证错误，提取其中的人类可读消息
+        try {
+          // raw 可能形如 "429 {...json...}"，JSON 部分从第一个 { 开始
+          const jsonStart = raw.indexOf('{')
+          if (jsonStart >= 0) {
+            const parsed = JSON.parse(raw.slice(jsonStart))
+            if (parsed?.error?.message) friendly = parsed.error.message
+          }
+        } catch {}
+        if (friendly) {
+          turnLog.value.push({
+            role: 'assistant',
+            timeline: [{ kind: 'text', text: friendly, order: 0 }],
+          })
+        }
+      }
       break
     case 'message_end':
       break
@@ -529,15 +551,10 @@ onUnmounted(() => {
 })
 
 const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
-
-const composedAt = computed(() => {
-  const d = new Date()
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-})
 </script>
 
 <template>
-  <div class="chat" :style="{ gridTemplateColumns: gridComputed }">
+  <div class="chat">
     <!-- Flat topbar (Volcengine style) -->
     <header class="topbar fade-up">
       <button class="back-btn btn-ghost" @click="router.push('/sessions')">
@@ -547,12 +564,6 @@ const composedAt = computed(() => {
       <div class="topbar-meta">
         <span class="serial">{{ session?.repoId || '—' }}</span>
         <h1 class="session-title">{{ session?.title || '未命名会话' }}</h1>
-      </div>
-      <div class="topbar-status">
-        <span v-if="isArchived" class="status-pill archived-pill">
-          <span class="status-dot archived"></span>
-          <span>已归档</span>
-        </span>
       </div>
     </header>
 
@@ -755,27 +766,16 @@ const composedAt = computed(() => {
         </button>
         <span class="rewind-hint"></span>
       </div>
-      <textarea
-        v-model="input"
-        class="composer-input field-raw"
-        rows="3"
-        :placeholder="isStreaming ? '正在生成中，可继续输入，生成完成后将自动发送…' : '在此描述你的需求，代理将在沙箱中执行…'"
-        @keydown.enter.ctrl.prevent="send"
-        @keydown.enter.meta.prevent="send"
-        :disabled="sending"
-      />
-      <div class="composer-foot">
-        <div class="composer-hints">
-          <span class="hint">
-            <span class="kbd">⌘/Ctrl ↵</span>
-            <span class="serial">发送</span>
-          </span>
-          <span class="hint">
-            <span class="kbd">↵</span>
-            <span class="serial">换行</span>
-          </span>
-          <span class="serial dim">{{ composedAt }} · {{ input.length }} 字符</span>
-        </div>
+      <div class="composer-input-row">
+        <textarea
+          v-model="input"
+          class="composer-input field-raw"
+          rows="1"
+          :placeholder="isStreaming ? '正在生成中，可继续输入，生成完成后将自动发送…' : '在此描述你的需求，代理将在沙箱中执行…'"
+          @keydown.enter.ctrl.prevent="send"
+          @keydown.enter.meta.prevent="send"
+          :disabled="sending"
+        />
         <button class="btn-primary send-btn" :disabled="sending || isStreaming || !input.trim()" @click="send">
           {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}
         </button>
@@ -1174,6 +1174,36 @@ const composedAt = computed(() => {
   box-shadow: var(--shadow-focus);
 }
 
+/* Input row: textarea + send button merged */
+.composer-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  border-top: 1px solid var(--border);
+}
+.composer-input-row .composer-input {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--surface) !important;
+  padding: 12px 16px !important;
+  font-size: 14px !important;
+  font-family: var(--font-ui) !important;
+  line-height: 1.65;
+  flex: 1;
+  min-width: 0;
+  resize: none;
+}
+.composer-input-row .composer-input:focus { box-shadow: none !important; border: 0 !important; }
+.composer-input-row .composer-input::placeholder { color: var(--ink-faint); }
+.composer-input-row .composer-input:disabled { opacity: 0.55; cursor: not-allowed; }
+.composer-input-row .send-btn {
+  border-radius: 0;
+  margin: 6px;
+  padding: 10px 20px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
 .composer-toolbar {
   display: flex;
   align-items: center;
@@ -1218,10 +1248,11 @@ const composedAt = computed(() => {
   border: 0 !important;
   border-radius: 0 !important;
   background: var(--surface) !important;
-  padding: 16px 18px 12px !important;
+  padding: 12px 16px !important;
   font-size: 14px !important;
   font-family: var(--font-ui) !important;
   line-height: 1.65;
+  resize: none;
 }
 .composer-input:focus { box-shadow: none !important; border: 0 !important; }
 .composer-input::placeholder { color: var(--ink-faint); }
@@ -1229,32 +1260,31 @@ const composedAt = computed(() => {
 
 .composer-foot {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-end;
   align-items: center;
   padding: 10px 14px;
   border-top: 1px solid var(--border);
   background: var(--surface-soft);
   gap: 12px;
-  flex-wrap: wrap;
 }
-.composer-hints { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.hint { display: inline-flex; align-items: center; gap: 4px; }
 .send-btn { padding: 9px 22px; font-size: 13px; }
 
 /* ====================================================================
    Mobile collapse
    ==================================================================== */
 @media (max-width: 900px) {
-  .chat { padding: 12px 16px; grid-template-columns: 1fr; max-width: none; }
+  .chat { padding: 8px; grid-template-columns: 1fr; max-width: none; }
   .chat-index { display: none; }
   .workspace-tree { display: none; }
-  .topbar { grid-template-columns: auto 1fr; }
-  .topbar-status { grid-column: 1 / -1; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--border); }
-  .session-title { font-size: 15px; }
-  .turn { grid-template-columns: 64px minmax(0, 1fr); gap: 12px; }
-  .turn-gutter { align-items: flex-start; text-align: left; }
-  .composer-foot { flex-direction: column; align-items: stretch; }
-  .send-btn { width: 100%; }
-  .composer-foot .abort-btn { width: 100%; margin-top: 6px; }
+  .topbar { grid-template-columns: auto 1fr; gap: 10px; padding: 8px 12px; }
+  .topbar-meta { border: 0; padding: 0; gap: 6px; }
+  .session-title { font-size: 14px; }
+  .turn { grid-template-columns: 1fr; gap: 4px; }
+  .turn-gutter { flex-direction: row; align-items: center; gap: 8px; padding-top: 0; text-align: left; }
+  .turn-num { font-size: 11px; }
+  .messages { padding: 4px 0; }
+  .composer-input-row { flex-wrap: wrap; }
+  .composer-input-row .composer-input { padding: 10px 12px !important; }
+  .composer-input-row .send-btn { width: 100%; margin: 0; border-radius: 0; }
 }
 </style>

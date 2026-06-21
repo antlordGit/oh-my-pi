@@ -100,6 +100,7 @@ public class OmpRpcClientFactory {
     private void syncModelsYml(Path agentDir, String provider, String modelId,
                                 String baseUrl, String api, String apiKey) {
         if (provider == null || provider.isBlank() || modelId == null || modelId.isBlank()) return;
+        // 写到全局 agentRoot 下的 models.yml，所有用户共享
         Path dest = agentDir.resolve("models.yml");
         Yaml yaml = buildYaml();
 
