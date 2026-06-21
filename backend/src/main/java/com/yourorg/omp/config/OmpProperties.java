@@ -19,7 +19,8 @@ public record OmpProperties(
         DefaultFlags defaultFlags,
         DefaultModel defaultModel,
         Security security,
-        Vault vault
+        Vault vault,
+        Ide ide
 ) {
     public record Pool(int maxConcurrent, int idleTtlMinutes) {}
 
@@ -42,4 +43,12 @@ public record OmpProperties(
     public record BootstrapAdmin(String username, String password) {}
 
     public record Vault(String apiKey) {}
+
+    /**
+     * IDE (openvscode-server) integration properties.
+     *
+     * @param enabled  是否启用 IDE 功能
+     * @param publicBaseUrl 浏览器可访问的 openvscode-server 地址（如 http://192.168.1.100:3000）
+     */
+    public record Ide(boolean enabled, String publicBaseUrl) {}
 }

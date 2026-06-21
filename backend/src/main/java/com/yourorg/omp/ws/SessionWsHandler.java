@@ -2,6 +2,7 @@ package com.yourorg.omp.ws;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.yourorg.omp.event.EventBus;
 import com.yourorg.omp.pool.ProcessPool;
 import com.yourorg.omp.rpc.OmpRpcClient;
@@ -127,6 +128,25 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
             case "prompt" -> {
                 String msg = frame.path("message").asText("");
                 sessions.sendCommand(meta, RpcCommands.prompt(msg));
+            }
+            case "extension_ui_response" -> {
+                // 回复 omp 发起的 UI 请求 (select/confirm/input/editor)
+                String id = frame.path("id").asText("");
+                if (id.isEmpty()) return;
+                String value = frame.path("value").asText(null);
+                boolean cancelled = frame.path("cancelled").asBoolean(false);
+                boolean timedOut = frame.path("timedOut").asBoolean(false);
+
+                OmpRpcClient client = sessions.acquireClient(meta);
+                if (client == null) return;
+
+                ObjectNode resp;
+                if (cancelled) {
+                    resp = RpcCommands.extensionUiResponseCancelled(id, timedOut);
+                } else {
+                    resp = RpcCommands.extensionUiResponse(id, value);
+                }
+                client.writeFrame(resp);  // fire-and-forget,不等待响应
             }
             default -> { /* ignore */ }
         }

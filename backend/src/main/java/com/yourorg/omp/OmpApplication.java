@@ -11,5 +11,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class OmpApplication {
     public static void main(String[] args) {
         SpringApplication.run(OmpApplication.class, args);
+        System.out.println("=========OmpApplication started=========");
     }
 }

@@ -176,6 +176,19 @@ public class OmpRpcClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Write a frame to omp's stdin without registering a pending future.
+     * Used for replying to omp-initiated requests (e.g. extension_ui_response)
+     * where we don't expect a correlated response.
+     */
+    public void writeFrame(ObjectNode frame) {
+        try {
+            writeLine(frame);
+        } catch (IOException e) {
+            log.error("[omp] writeFrame failed session={}: {}", sessionId, e.getMessage());
+        }
+    }
+
     /** Multicast stream of every non-response frame omp emits (events, host callbacks, etc). */
     public Flux<JsonNode> events() {
         return eventSink.asFlux();
@@ -216,7 +229,9 @@ public class OmpRpcClient implements AutoCloseable {
             if ("message_update".equals(type)) {
                 JsonNode evt = frame.path("assistantMessageEvent");
                 String etype = evt.path("type").asText();
-                if ("text_delta".equals(etype) || "thinking_delta".equals(etype)) {
+                // 所有 *_delta 流式增量（text_delta / thinking_delta / toolcall_delta 等）每轮触发数百次，
+                // 统一降到 debug，避免刷屏；非 delta 的关键事件仍保留 INFO。
+                if (etype.endsWith("_delta")) {
                     log.debug("[omp→OUT] session={} {} {} delta={}", sessionId, type, etype,
                             evt.path("delta").asText("").replace("\n", "\\n"));
                 } else {

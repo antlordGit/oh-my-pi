@@ -4,11 +4,16 @@ import com.yourorg.omp.admin.AdminConfigService;
 import com.yourorg.omp.config.OmpProperties;
 import com.yourorg.omp.workspace.WorkspaceService;
 import org.springframework.stereotype.Component;
+import org.yaml.snakeyaml.DumperOptions;
+import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Builds {@link OmpProcessSpec} instances and spawns {@link OmpRpcClient}s.
@@ -18,6 +23,9 @@ import java.util.List;
  *   <li>Admin overrides ({@link AdminConfigService}) — applied at startup</li>
  *   <li>Default flags from {@link OmpProperties}</li>
  * </ol>
+ *
+ * <p>Before spawning OMP, the active model from {@code model.active} is
+ * written to the user's {@code models.yml} so OMP can find it.
  */
 @Component
 public class OmpRpcClientFactory {
@@ -58,6 +66,9 @@ public class OmpRpcClientFactory {
             if (mc.get().api() != null) api = mc.get().api();
         }
 
+        // 同步写入 models.yml，确保 OMP 能找到自定义模型
+        syncModelsYml(agentDir, provider, modelId, baseUrl, api, apiKey);
+
         OmpProcessSpec spec = new OmpProcessSpec(
                 props.binary(),
                 workspace,
@@ -78,5 +89,76 @@ public class OmpRpcClientFactory {
                 api
         );
         return OmpRpcClient.start(sessionId, spec, Duration.ofSeconds(30));
+    }
+
+    /**
+     * 将 model.active 动态同步到用户 models.yml，使 OMP 进程能找到自定义模型。
+     * 只做增量合并：如果同名 provider 已存在且有相同 model id，跳过。
+     * 其他已有内容保持不动。
+     */
+    @SuppressWarnings("unchecked")
+    private void syncModelsYml(Path agentDir, String provider, String modelId,
+                                String baseUrl, String api, String apiKey) {
+        if (provider == null || provider.isBlank() || modelId == null || modelId.isBlank()) return;
+        Path dest = agentDir.resolve("models.yml");
+        Yaml yaml = buildYaml();
+
+        // 读取已有配置
+        Map<String, Object> root;
+        try {
+            if (Files.exists(dest)) {
+                String existing = Files.readString(dest);
+                if (!existing.isBlank()) {
+                    root = yaml.load(existing);
+                } else {
+                    root = new LinkedHashMap<>();
+                }
+            } else {
+                root = new LinkedHashMap<>();
+            }
+        } catch (IOException e) {
+            root = new LinkedHashMap<>();
+        }
+        if (root == null) root = new LinkedHashMap<>();
+
+        Map<String, Object> providers = (Map<String, Object>) root.computeIfAbsent("providers", k -> new LinkedHashMap<>());
+        Map<String, Object> providerCfg = (Map<String, Object>) providers.computeIfAbsent(provider, k -> {
+            Map<String, Object> cfg = new LinkedHashMap<>();
+            if (baseUrl != null && !baseUrl.isBlank()) cfg.put("baseUrl", baseUrl);
+            if (api != null && !api.isBlank()) cfg.put("api", api);
+            if (apiKey != null && !apiKey.isBlank()) cfg.put("apiKey", apiKey);
+            return cfg;
+        });
+
+        // 补全 provider 级字段（可能已有记录但不全）
+        if (baseUrl != null && !baseUrl.isBlank()) providerCfg.putIfAbsent("baseUrl", baseUrl);
+        if (api != null && !api.isBlank()) providerCfg.putIfAbsent("api", api);
+        if (apiKey != null && !apiKey.isBlank()) providerCfg.putIfAbsent("apiKey", apiKey);
+
+        // 增量添加 model
+        List<Map<String, Object>> models = (List<Map<String, Object>>) providerCfg.computeIfAbsent("models", k -> new java.util.ArrayList<>());
+        boolean found = models.stream().anyMatch(m -> modelId.equals(m.get("id")));
+        if (!found) {
+            Map<String, Object> newModel = new LinkedHashMap<>();
+            newModel.put("id", modelId);
+            newModel.put("name", modelId);
+            models.add(newModel);
+        }
+
+        // 写回文件
+        try {
+            Files.createDirectories(agentDir);
+            Files.writeString(dest, yaml.dump(root));
+        } catch (IOException e) {
+            // 写入失败不要阻塞启动——让 omp 自带报错兜底
+        }
+    }
+
+    private static Yaml buildYaml() {
+        DumperOptions opts = new DumperOptions();
+        opts.setDefaultFlowStyle(DumperOptions.FlowStyle.BLOCK);
+        opts.setPrettyFlow(true);
+        opts.setIndent(2);
+        return new Yaml(opts);
     }
 }

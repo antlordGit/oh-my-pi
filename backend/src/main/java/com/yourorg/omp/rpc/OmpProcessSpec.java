@@ -47,13 +47,16 @@ public record OmpProcessSpec(
 
     /**
      * Build the argv array for ProcessBuilder. Order matches docs/rpc.md "Startup":
-     *   omp --mode rpc [flags] [--resume path | --fork path]
+     *   omp --mode rpc-ui [flags] [--resume path | --fork path]
+     *
+     * Use rpc-ui (not plain rpc) so the `ask` tool is registered and can emit
+     * extension_ui_request frames for interactive user prompts.
      */
     public List<String> toArgv() {
         List<String> argv = new ArrayList<>();
         argv.add(ompBinary);
         argv.add("--mode");
-        argv.add("rpc");
+        argv.add("rpc-ui");
         if (thinkingLevel != null && !thinkingLevel.isBlank()) {
             argv.add("--thinking");
             argv.add(thinkingLevel);

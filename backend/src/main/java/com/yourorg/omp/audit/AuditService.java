@@ -9,6 +9,7 @@ import com.yourorg.omp.repo.PromptAuditRepository;
 import com.yourorg.omp.repo.ResponseAuditRepository;
 import com.yourorg.omp.repo.SessionMetaRepository;
 import com.yourorg.omp.repo.ToolAuditRepository;
+import com.yourorg.omp.repo.UserRepository;
 import com.yourorg.omp.rpc.RpcFrameType;
 import com.yourorg.omp.workspace.WorkspaceService;
 import jakarta.annotation.PostConstruct;
@@ -45,6 +46,7 @@ public class AuditService {
     private final ToolAuditRepository toolRepo;
     private final ResponseAuditRepository responseRepo;
     private final WorkspaceService workspace;
+    private final UserRepository userRepo;
 
     private final ExecutorService dispatcher = Executors.newCachedThreadPool(r -> {
         Thread t = new Thread(r, "audit-dispatcher");
@@ -61,13 +63,15 @@ public class AuditService {
                         PromptAuditRepository promptRepo,
                         ToolAuditRepository toolRepo,
                         ResponseAuditRepository responseRepo,
-                        WorkspaceService workspace) {
+                        WorkspaceService workspace,
+                        UserRepository userRepo) {
         this.eventBus = eventBus;
         this.sessionRepo = sessionRepo;
         this.promptRepo = promptRepo;
         this.toolRepo = toolRepo;
         this.responseRepo = responseRepo;
         this.workspace = workspace;
+        this.userRepo = userRepo;
     }
 
     /**
@@ -158,6 +162,12 @@ public class AuditService {
         r.setStopReason(msg.path("stopReason").asText(null));
         r.setFinishedAt(Instant.now());
         responseRepo.save(r);
+
+        // 累加用户已消耗 Token（usage.totalTokens 由 wire 协议在 message 帧中给出）
+        long totalTokens = msg.path("usage").path("totalTokens").asLong(0);
+        if (totalTokens > 0 && meta.getUserId() != null) {
+            userRepo.addTokenUsed(meta.getUserId(), totalTokens);
+        }
     }
 
     // -------- tool lifecycle --------

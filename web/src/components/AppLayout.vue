@@ -12,6 +12,7 @@ const auth = useAuthStore()
 const menuStore = useMenuStore()
 
 const expandedIds = ref<Set<number>>(new Set())
+const mobileMenuOpen = ref(false)
 
 function visibleChildren(menus: MenuInfo[] | undefined): MenuInfo[] {
   if (!menus) return []
@@ -154,6 +155,12 @@ onMounted(() => {
           <span class="brand-tag">WORKSTATION</span>
         </div>
 
+        <button class="hamburger hide-desktop" @click.stop="mobileMenuOpen = !mobileMenuOpen" :aria-label="mobileMenuOpen ? '关闭菜单' : '打开菜单'">
+          <span class="hamburger-line" :class="{ open: mobileMenuOpen }"></span>
+          <span class="hamburger-line" :class="{ open: mobileMenuOpen }"></span>
+          <span class="hamburger-line" :class="{ open: mobileMenuOpen }"></span>
+        </button>
+
         <nav class="top-nav">
           <template v-for="menu in topMenus" :key="menu.id">
             <div class="nav-item-wrapper">
@@ -222,6 +229,58 @@ onMounted(() => {
         </button>
       </div>
     </header>
+
+    <!-- Mobile nav drawer -->
+    <Transition name="drawer">
+      <aside v-if="mobileMenuOpen" class="mobile-nav-drawer">
+        <div class="drawer-header">
+          <span class="drawer-title">NAVIGATION</span>
+          <button class="drawer-close" @click="mobileMenuOpen = false">✕</button>
+        </div>
+        <nav class="drawer-nav">
+          <div v-for="menu in topMenus" :key="menu.id" class="drawer-nav-group">
+            <div
+              class="drawer-nav-parent"
+              :class="{ active: isMenuActive(menu) }"
+              @click="navigateTo(menu); mobileMenuOpen = false"
+            >
+              <span>{{ menu.menuName }}</span>
+              <span v-if="menuChildren(menu).length" class="drawer-chevron">›</span>
+            </div>
+            <div
+              v-for="child in menuChildren(menu)"
+              :key="child.id"
+              class="drawer-nav-child"
+              :class="{ active: isActive(child) }"
+              @click="navigateToChild(child); mobileMenuOpen = false"
+            >
+              <span class="drawer-child-dot"></span>
+              <span>{{ child.menuName }}</span>
+            </div>
+          </div>
+        </nav>
+        <div class="drawer-footer">
+          <div class="drawer-user">
+            <span class="drawer-status-dot"></span>
+            <span class="username">{{ auth.username }}</span>
+            <span v-if="auth.isAdmin" class="role-badge">
+              {{ auth.isSuperAdmin ? 'SUPERADMIN' : 'ADMIN' }}
+            </span>
+          </div>
+          <div class="drawer-actions">
+            <button class="btn-ghost btn-sm" @click="toggleTheme()">
+              {{ isDark ? '◑ 亮色' : '◐ 暗色' }}
+            </button>
+            <button class="btn-mini-danger" @click="logout()">登出</button>
+          </div>
+        </div>
+      </aside>
+    </Transition>
+
+    <!-- Drawer backdrop -->
+    <Transition name="fade">
+      <div v-if="mobileMenuOpen" class="drawer-backdrop" @click="mobileMenuOpen = false"></div>
+    </Transition>
 
     <main class="app-main">
       <router-view />
@@ -605,5 +664,283 @@ onMounted(() => {
   flex: 1;
   overflow-y: auto;
   background: var(--canvas);
+}
+
+/* ====================================================================
+   Mobile — max-width 768px
+   ==================================================================== */
+
+@media (max-width: 768px) {
+  .app-header {
+    padding: 0 12px;
+  }
+
+  .brand {
+    margin-right: 0;
+    gap: 8px;
+  }
+
+  .brand::after {
+    display: none;
+  }
+
+  .brand-name {
+    font-size: 14px;
+    letter-spacing: 1px;
+  }
+
+  .brand-tag {
+    display: none;
+  }
+
+  /* --- Hamburger --- */
+  .hamburger {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 4px;
+    width: 36px;
+    height: 36px;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    cursor: pointer;
+    padding: 0;
+    margin-left: 10px;
+    flex-shrink: 0;
+    z-index: 300;
+  }
+
+  .hamburger-line {
+    display: block;
+    width: 18px;
+    height: 2px;
+    background: var(--fg-mute);
+    border-radius: 1px;
+    transition: all 0.2s var(--ease-out);
+  }
+
+  .hamburger-line.open:nth-child(1) {
+    transform: translateY(6px) rotate(45deg);
+  }
+
+  .hamburger-line.open:nth-child(2) {
+    opacity: 0;
+  }
+
+  .hamburger-line.open:nth-child(3) {
+    transform: translateY(-6px) rotate(-45deg);
+  }
+
+  /* --- Hide desktop nav --- */
+  .top-nav {
+    display: none;
+  }
+
+  /* --- Hide theme & logout from header --- */
+  .header-right .btn-logout {
+    display: none;
+  }
+
+  .username {
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+
+  /* --- Drawer backdrop --- */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 299;
+  }
+
+  /* --- Mobile nav drawer --- */
+  .mobile-nav-drawer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 280px;
+    max-width: 85vw;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    z-index: 300;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    box-shadow: 8px 0 32px rgba(0, 0, 0, 0.5);
+  }
+
+  .drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .drawer-title {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    color: var(--ink-mute);
+  }
+
+  .drawer-close {
+    background: none;
+    border: none;
+    color: var(--fg-dim);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: color 0.15s ease;
+  }
+
+  .drawer-close:hover {
+    color: var(--fg);
+  }
+
+  .drawer-nav {
+    flex: 1;
+    padding: 8px 0;
+    overflow-y: auto;
+  }
+
+  .drawer-nav-parent {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 13px 20px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg-mute);
+    cursor: pointer;
+    letter-spacing: 0.3px;
+    border-left: 3px solid transparent;
+    transition: all 0.12s ease;
+  }
+
+  .drawer-nav-parent:hover,
+  .drawer-nav-parent.active {
+    color: var(--brand);
+    background: var(--brand-soft);
+    border-left-color: var(--brand);
+  }
+
+  .drawer-nav-child {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 20px 10px 36px;
+    font-size: 13px;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .drawer-nav-child:hover,
+  .drawer-nav-child.active {
+    color: var(--brand);
+    background: var(--brand-soft);
+  }
+
+  .drawer-child-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    flex-shrink: 0;
+  }
+
+  .drawer-nav-child.active .drawer-child-dot {
+    background: var(--brand);
+  }
+
+  .drawer-chevron {
+    font-size: 16px;
+    opacity: 0.4;
+  }
+
+  .drawer-footer {
+    border-top: 1px solid var(--border);
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+
+  .drawer-user {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .drawer-status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--brand);
+    box-shadow: 0 0 6px var(--brand);
+    flex-shrink: 0;
+  }
+
+  .drawer-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .drawer-actions .btn-ghost {
+    flex: 1;
+    justify-content: center;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+
+  .drawer-actions .btn-mini-danger {
+    padding: 6px 16px;
+    font-size: 11px;
+  }
+
+  .btn-sm {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+}
+
+/* --- Drawer transition --- */
+.drawer-enter-active {
+  transition: transform 0.25s var(--ease-out);
+}
+
+.drawer-leave-active {
+  transition: transform 0.2s ease-in;
+}
+
+.drawer-enter-from,
+.drawer-leave-to {
+  transform: translateX(-100%);
+}
+
+/* --- Backdrop fade transition --- */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
 }
 </style>

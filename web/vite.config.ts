@@ -11,6 +11,7 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    allowedHosts: ['localhost', '.cpolar.top'],
     proxy: {
       '/api': 'http://localhost:8080',
       // Proxy only the real backend admin API paths — NOT the SPA route /admin itself.

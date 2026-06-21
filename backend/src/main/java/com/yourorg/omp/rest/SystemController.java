@@ -25,8 +25,10 @@ public class SystemController {
     // ==================== 用户管理 ====================
 
     public record CreateUserRequest(@NotBlank String username, String name, @NotBlank String password,
-                                    String identityLevel, Long tenantId, List<Long> roleIds) {}
-    public record UpdateUserRequest(String name, String identityLevel, Long tenantId, Boolean enabled) {}
+                                    String identityLevel, Long tenantId, List<Long> roleIds, Integer diskLimitMb,
+                                    Long tokenLimit) {}
+    public record UpdateUserRequest(String name, String identityLevel, Long tenantId, Boolean enabled, Integer diskLimitMb,
+                                    Long tokenLimit) {}
     public record AssignUserRolesRequest(List<Long> roleIds) {}
 
     @GetMapping("/users")
@@ -42,12 +44,12 @@ public class SystemController {
     @PostMapping("/users")
     public Map<String, Object> createUser(@RequestBody CreateUserRequest req) {
         return sys.createUser(req.username(), req.name(), req.password(), req.identityLevel(),
-                req.tenantId(), req.roleIds());
+                req.tenantId(), req.roleIds(), req.diskLimitMb(), req.tokenLimit());
     }
 
     @PutMapping("/users/{id}")
     public Map<String, Object> updateUser(@PathVariable Long id, @RequestBody UpdateUserRequest req) {
-        return sys.updateUser(id, req.name(), req.identityLevel(), req.tenantId(), req.enabled());
+        return sys.updateUser(id, req.name(), req.identityLevel(), req.tenantId(), req.enabled(), req.diskLimitMb(), req.tokenLimit());
     }
 
     @PutMapping("/users/{id}/roles")

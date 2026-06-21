@@ -11,4 +11,7 @@ public interface RoleRepository extends JpaRepository<Role, Long> {
     List<Role> findByTenantIdAndEnabledTrue(Long tenantId);
     Optional<Role> findByTenantIdAndRoleCode(Long tenantId, String roleCode);
     Optional<Role> findByTenantIdAndRoleName(Long tenantId, String roleName);
+
+    /** 查找全局角色（tenant_id 为 NULL），用于 ordinary-user-role / manage-user-role 等内置角色。 */
+    Optional<Role> findByTenantIdIsNullAndRoleCode(String roleCode);
 }

@@ -90,6 +90,8 @@ onMounted(load)
         <span style="width:120px">租户</span>
         <span style="width:140px">角色</span>
         <span style="width:60px">状态</span>
+        <span style="width:120px">磁盘(已用/限额)</span>
+        <span style="width:140px">Token(已用/额度)</span>
         <span style="width:120px">创建时间</span>
         <span style="width:140px">操作</span>
       </div>
@@ -110,6 +112,15 @@ onMounted(load)
           <span class="tag" :class="u.enabled ? 'tag-success' : 'tag-danger'">
             {{ u.enabled ? '启用' : '禁用' }}
           </span>
+        </span>
+        <span class="mono dim" style="width:120px;font-size:11px">
+          <span :class="{ 'tag-danger': u.diskUsageMb >= u.diskLimitMb }">{{ u.diskUsageMb }}</span> / {{ u.diskLimitMb }} MB
+        </span>
+        <span class="mono dim" style="width:140px;font-size:11px">
+          <template v-if="u.tokenLimit > 0">
+            <span :class="{ 'tag-danger': u.tokenUsed >= u.tokenLimit }">{{ u.tokenUsed }}</span> / {{ u.tokenLimit }}
+          </template>
+          <template v-else>{{ u.tokenUsed }} / 不限</template>
         </span>
         <span class="mono dim" style="width:120px;font-size:11px">{{ u.createdAt?.slice(0, 10) || '—' }}</span>
         <span style="width:140px;display:inline-flex;gap:6px">

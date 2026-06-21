@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog } from 'naive-ui'
 import { listSessions, createSession, archive, unarchive, type SessionSummary } from '@/api/session'
-import { listRepos, createRepo, copyRepo, deleteRepo, type Repo } from '@/api/repo'
+import { listRepos, createRepo, importRepo, copyRepo, deleteRepo, exportRepo, type Repo } from '@/api/repo'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -22,6 +22,73 @@ const newSessionRepo = ref<string>('')
 const newSessionTitle = ref('')
 const showCreator = ref(false)
 const showRepoManager = ref(false)
+
+// 导入工程状态
+const importLoading = ref(false)
+const importModalVisible = ref(false)
+const importFileInput = ref<HTMLInputElement | null>(null)
+
+/** 仓库标识验证规则：英文、数字、-，最长 32 位 */
+const REPO_ID_RE = /^[A-Za-z0-9-]{1,32}$/
+
+function validateRepoId(id: string): string | null {
+  if (!id) return '仓库标识不能为空'
+  if (id.length > 32) return '仓库标识不能超过 32 位'
+  if (!REPO_ID_RE.test(id)) return '仓库标识只能包含英文、数字和-'
+  return null
+}
+
+/** 从文件夹名生成合法的仓库标识：过滤非法字符，最多 32 位 */
+function sanitizeRepoId(folderName: string): string {
+  // 先尝试直接保留英文/数字/-，移除其他
+  let id = folderName
+    .replace(/\s+/g, '-')
+    .replace(/[^A-Za-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  if (id.length > 32) id = id.slice(0, 32)
+
+  // 如果过滤后为空（纯中文等），用前缀+时间戳
+  if (!id) {
+    id = 'repo-' + Date.now().toString(36)
+  }
+  return id
+}
+
+/** 处理文件夹选择和导入 */
+async function onImportFiles(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  if (!files || !files.length) return
+
+  // 从第一个文件的相对路径中提取文件夹名
+  const firstFile = files[0] as any as { webkitRelativePath?: string }
+  const relPath = firstFile.webkitRelativePath || files[0].name
+  const folderName = relPath.split('/')[0]
+  const repoId = sanitizeRepoId(folderName)
+
+  // 验证仓库标识
+  const err = validateRepoId(repoId)
+  if (err) {
+    msg.error(`文件夹名「${folderName}」生成的标识无效：${err}`)
+    input.value = ''
+    return
+  }
+
+  importLoading.value = true
+  try {
+    await importRepo(repoId, Array.from(files))
+    msg.success(`工程已导入（仓库标识: ${repoId}）`)
+    input.value = ''
+    importModalVisible.value = false
+    await refresh()
+  } catch (e: any) {
+    msg.error(e?.response?.data?.error || '导入失败')
+  } finally {
+    importLoading.value = false
+  }
+}
 
 // Copy repo modal state
 const copySourceRepo = ref<string>('')
@@ -58,9 +125,9 @@ async function onCreateRepo() {
   try {
     await createRepo(newRepoId.value, newRepoName.value || newRepoId.value)
     newRepoId.value = ''; newRepoName.value = ''
-    msg.success('仓库已登记')
+    msg.success('仓库已创建')
     await refresh()
-  } catch (e: any) { msg.error(e?.response?.data?.error || '登记失败') }
+  } catch (e: any) { msg.error(e?.response?.data?.error || '创建失败') }
 }
 
 async function onCreateSession() {
@@ -75,10 +142,18 @@ async function onCreateSession() {
 
 // Repo copy/delete handlers
 function openCopyModal(repoId: string) {
-  copySourceRepo.value = repoId
-  copyTargetRepoId.value = repoId + '-copy'
-  copyDisplayName.value = ''
-  showCopyModal.value = true
+  dialog.warning({
+    title: '确认复制',
+    content: `确定要复制仓库「${repoId}」为新的仓库吗？`,
+    positiveText: '继续',
+    negativeText: '取消',
+    onPositiveClick: () => {
+      copySourceRepo.value = repoId
+      copyTargetRepoId.value = repoId + '-copy'
+      copyDisplayName.value = ''
+      showCopyModal.value = true
+    },
+  })
 }
 
 async function doCopyRepo() {
@@ -106,6 +181,14 @@ function confirmDeleteRepo(repoId: string, displayName: string) {
       } catch (e: any) { msg.error(e?.response?.data?.error || '删除失败') }
     }
   })
+}
+
+async function onExportRepo(repoId: string, displayName: string) {
+  try {
+    msg.loading('正在导出…')
+    await exportRepo(repoId, displayName)
+    msg.success('导出完成')
+  } catch (e: any) { msg.error(e?.response?.data?.error || '导出失败') }
 }
 
 const OVERRIDES_KEY = 'omp.admin.sessionOverrides'
@@ -228,12 +311,13 @@ onMounted(refresh)
       <section v-if="showCreator" class="creator card">
         <div class="creator-grid">
           <div class="creator-card">
-            <span class="tag">01 · 登记仓库</span>
-            <h3 class="creator-title">登记一个<br /><strong>新仓库</strong></h3>
+            <span class="tag">01 · 创建仓库</span>
+            <h3 class="creator-title">创建或导入<br /><strong>新仓库</strong></h3>
             <input v-model="newRepoId" class="field-raw" maxlength="32" placeholder="仓库标识（英文/数字/-，≤32位）" />
             <input v-model="newRepoName" class="field-raw" placeholder="显示名（可选）" />
             <div class="creator-actions">
-              <button class="btn-outline" :disabled="!newRepoId" @click="onCreateRepo">登记</button>
+              <button class="btn-outline" :disabled="!newRepoId" @click="onCreateRepo">创建</button>
+              <button class="btn-outline" @click="importModalVisible = true">导入工程</button>
               <button class="btn-ghost btn-sm" @click="showRepoManager = true">管理</button>
             </div>
           </div>
@@ -270,6 +354,7 @@ onMounted(refresh)
                   <code class="repo-id">{{ r.repoId }}</code>
                 </div>
                 <div class="repo-actions">
+                  <button v-if="auth.isAdmin" class="btn-ghost btn-sm" @click="onExportRepo(r.repoId, r.displayName)">导出</button>
                   <button v-if="auth.isAdmin" class="btn-ghost btn-sm" @click="openCopyModal(r.repoId)">复制</button>
                   <button v-if="auth.isAdmin" class="btn-mini-danger btn-sm" @click="confirmDeleteRepo(r.repoId, r.displayName)">删除</button>
                 </div>
@@ -294,6 +379,42 @@ onMounted(refresh)
             <input v-model="copyDisplayName" class="field-raw" placeholder="显示名（可选）" />
             <div class="modal-actions">
               <button class="btn-primary" :disabled="!copyTargetRepoId" @click="doCopyRepo">确认复制</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </transition>
+
+    <!-- 导入工程弹窗 -->
+    <transition name="fade">
+      <div v-if="importModalVisible" class="modal-overlay" @click.self="!importLoading && (importModalVisible = false)">
+        <div class="modal card import-modal">
+          <div class="modal-header">
+            <h3>导入工程</h3>
+            <button v-if="!importLoading" class="btn-ghost btn-sm" @click="importModalVisible = false">取消</button>
+          </div>
+          <div class="modal-body import-body">
+            <p class="modal-hint">选择本地文件夹导入为仓库，文件夹名自动作为仓库标识</p>
+            <div class="import-zone" :class="{ 'is-loading': importLoading }">
+              <template v-if="!importLoading">
+                <span class="import-icon">📁</span>
+                <p class="import-text">点击下方按钮选择文件夹，或拖拽文件夹到此处</p>
+                <button class="btn-primary" @click="importFileInput?.click()">选择文件夹</button>
+                <input
+                  ref="importFileInput"
+                  class="import-upload-input"
+                  type="file"
+                  webkitdirectory
+                  directory
+                  multiple
+                  hidden
+                  @change="onImportFiles"
+                />
+              </template>
+              <template v-else>
+                <span class="import-spinner"></span>
+                <p class="import-text">正在上传并创建仓库…</p>
+              </template>
             </div>
           </div>
         </div>
@@ -575,6 +696,54 @@ onMounted(refresh)
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 
 /* ====================================================================
+   Import modal
+   ==================================================================== */
+.import-modal {
+  width: 480px;
+}
+.import-body {
+  gap: 16px;
+}
+.import-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 40px 24px;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  text-align: center;
+  transition: all var(--dur-fast) var(--ease-out);
+  min-height: 180px;
+}
+.import-zone.is-loading {
+  border-color: var(--brand);
+  background: var(--surface);
+}
+.import-icon {
+  font-size: 40px;
+  line-height: 1;
+}
+.import-text {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0;
+}
+.import-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ====================================================================
    Modal
    ==================================================================== */
 .modal-overlay {
@@ -768,5 +937,94 @@ onMounted(refresh)
   .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }
   .entry { grid-template-columns: 1fr; padding: 16px 18px; }
   .entry-act { flex-direction: row; }
+}
+
+/* ====================================================================
+   Mobile — max-width 768px
+   ==================================================================== */
+@media (max-width: 768px) {
+  .page { padding: 12px 12px 64px; gap: 16px; }
+
+  /* --- filter strip --- */
+  .filter-strip { gap: 8px; }
+  .filter-pill {
+    flex: 1 1 auto;
+    min-width: 0;
+    justify-content: center;
+    font-size: 11px;
+    padding: 6px 10px;
+  }
+  .filter-strip .btn-primary {
+    width: 100%;
+    justify-content: center;
+  }
+  .filter-strip .dotline-fill { display: none; }
+  .filter-strip .serial { display: none; }
+
+  /* --- creator --- */
+  .creator-card { padding: 18px 16px; gap: 10px; }
+  .creator-title { font-size: 17px; }
+  .creator-card .btn-primary,
+  .creator-card .btn-outline { width: 100%; justify-content: center; }
+  .creator-actions { flex-direction: column; width: 100%; }
+  .creator-actions .btn-outline,
+  .creator-actions .btn-ghost { width: 100%; justify-content: center; }
+
+  /* --- entry cards --- */
+  .entry { padding: 14px 14px; gap: 8px; }
+  .entry-l {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+  }
+  .entry-num { font-size: 11px; }
+  .entry-title { font-size: 16px; margin: 0 0 4px; }
+  .entry-meta { gap: 10px; flex-wrap: wrap; }
+  .meta { gap: 4px; }
+  .meta .mono { font-size: 10px; }
+  .entry-act {
+    flex-direction: row;
+    justify-content: stretch;
+    gap: 8px;
+  }
+  .entry-act .btn-ghost,
+  .entry-act .btn-mini-danger {
+    flex: 1;
+    text-align: center;
+    justify-content: center;
+  }
+
+  /* --- import modal --- */
+  .import-zone { padding: 24px 16px; min-height: 140px; }
+  .import-modal { width: 100vw; }
+
+  /* --- modal --- */
+  .modal-overlay {
+    align-items: flex-end;
+  }
+  .modal {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 85vh;
+    border-radius: var(--radius) var(--radius) 0 0;
+  }
+  .modal-header { padding: 14px 16px; }
+  .modal-body { padding: 14px 16px; gap: 10px; }
+  .repo-item { flex-direction: column; align-items: flex-start; gap: 8px; }
+  .repo-actions { width: 100%; justify-content: flex-end; }
+}
+
+/* ====================================================================
+   Mobile — max-width 480px (small phones)
+   ==================================================================== */
+@media (max-width: 480px) {
+  .stat-cell { padding: 14px 8px 12px; gap: 6px; }
+  .stat-ring { width: 56px; height: 56px; }
+  .stat-ring::before { border-width: 1px; }
+  .stat-cell .big-num { font-size: 26px; }
+  .stat-foot { font-size: 10px; gap: 4px; }
+  .entry-title { font-size: 15px; }
+  .entry-meta { gap: 6px; font-size: 11px; }
 }
 </style>

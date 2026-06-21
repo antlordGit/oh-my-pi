@@ -12,6 +12,10 @@ export interface UserInfo {
   tenantName: string | null
   roleNames: string[]
   enabled: boolean
+  diskLimitMb: number
+  diskUsageMb: number
+  tokenLimit: number
+  tokenUsed: number
   createdAt: string | null
   lastLoginAt: string | null
   roleIds?: number[]
@@ -24,6 +28,8 @@ export interface CreateUserParams {
   identityLevel?: string
   tenantId?: number
   roleIds?: number[]
+  diskLimitMb?: number
+  tokenLimit?: number
 }
 
 export interface UpdateUserParams {
@@ -31,6 +37,8 @@ export interface UpdateUserParams {
   identityLevel?: string
   tenantId?: number
   enabled?: boolean
+  diskLimitMb?: number
+  tokenLimit?: number
 }
 
 export async function listUsers(): Promise<UserInfo[]> {

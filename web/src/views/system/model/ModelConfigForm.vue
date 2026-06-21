@@ -52,6 +52,68 @@ const API_OPTIONS = [
 ]
 
 /**
+ * OMP 认识的全部 provider id（取自 catalog 的 models.json）。
+ * Provider 必须是其中之一，否则 omp 启动会报 "Unknown provider" 并退出。
+ * 豆包/火山方舟等 OpenAI 兼容端点应选 openai，再在 Base URL 填对应端点。
+ */
+const PROVIDER_OPTIONS = [
+  'aimlapi',
+  'alibaba-coding-plan',
+  'amazon-bedrock',
+  'anthropic',
+  'cerebras',
+  'cloudflare-ai-gateway',
+  'cursor',
+  'deepseek',
+  'firepass',
+  'fireworks',
+  'github-copilot',
+  'gitlab-duo',
+  'google',
+  'google-antigravity',
+  'google-gemini-cli',
+  'google-vertex',
+  'groq',
+  'huggingface',
+  'kilo',
+  'kimi-code',
+  'minimax',
+  'minimax-cn',
+  'minimax-code',
+  'minimax-code-cn',
+  'mistral',
+  'moonshot',
+  'nanogpt',
+  'nvidia',
+  'ollama-cloud',
+  'openai',
+  'openai-codex',
+  'opencode',
+  'opencode-go',
+  'opencode-zen',
+  'openrouter',
+  'qianfan',
+  'qwen-portal',
+  'synthetic',
+  'together',
+  'venice',
+  'vercel-ai-gateway',
+  'wafer-pass',
+  'wafer-serverless',
+  'xai',
+  'xai-oauth',
+  'xiaomi',
+  'zai',
+  'zenmux',
+]
+
+// 编辑模式下若旧 provider 值不在合法列表里（如历史遗留的 "DouBaoSeed"），
+// 需要让它在下拉里以「非法值」形式可见，提醒用户必须重选成合法值。
+const legacyProvider = ref(
+  editMode && provider.value && !PROVIDER_OPTIONS.includes(provider.value) ? provider.value : '',
+)
+
+/**
  * 根据表单字段重建完整配置 JSON。
  * 保留用户在 JSON 中手动添加的高级键（discovery / modelOverrides 等）。
  */
@@ -109,6 +171,10 @@ function handleReset() {
 async function handleSubmit() {
   if (!configName.value) { msg.error('配置名称不能为空'); return }
   if (!provider.value) { msg.error('provider 不能为空'); return }
+  if (!PROVIDER_OPTIONS.includes(provider.value)) {
+    msg.error(`provider "${provider.value}" 不是合法值，请从下拉中选择（豆包等 OpenAI 兼容端点选 openai）`)
+    return
+  }
   if (!modelId.value) { msg.error('modelId 不能为空'); return }
   loading.value = true
   try {
@@ -168,8 +234,12 @@ async function handleSubmit() {
             <input v-model="displayName" class="field-input" placeholder="例如「DeepSeek生产环境」" />
           </label>
           <label class="field">
-            <span>Provider <em class="req">*</em></span>
-            <input v-model="provider" class="field-input" placeholder="例如 deepseek" />
+            <span>Provider <em class="req">*</em> <small style="color:var(--ink-mute);font-weight:normal">（豆包等 OpenAI 兼容端点请选 openai，并在下方 Base URL 填端点）</small></span>
+            <select v-model="provider" class="field-input">
+              <option value="" disabled>请选择 Provider</option>
+              <option v-if="legacyProvider" :value="legacyProvider">⚠ {{ legacyProvider }}（非法值，请重新选择）</option>
+              <option v-for="opt in PROVIDER_OPTIONS" :key="opt" :value="opt">{{ opt }}</option>
+            </select>
           </label>
           <label class="field">
             <span>Model ID <em class="req">*</em></span>

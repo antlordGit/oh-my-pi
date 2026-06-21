@@ -42,6 +42,9 @@ public class WorkspaceService {
     /** Path-safe identifier pattern: alphanumeric and hyphen only. */
     private static final Pattern PATH_ID_PATTERN = Pattern.compile("^[A-Za-z0-9-]+$");
 
+    /** Path-safe username pattern: alphanumeric, hyphen and underscore (下划线对路径安全无害)。 */
+    private static final Pattern USERNAME_PATH_PATTERN = Pattern.compile("^[A-Za-z0-9_-]+$");
+
     private final OmpProperties props;
     private final UserRepository users;
 
@@ -67,7 +70,7 @@ public class WorkspaceService {
         if (username == null || username.isBlank()) {
             throw new IllegalArgumentException("用户未设置用户名: " + userId);
         }
-        if (!PATH_ID_PATTERN.matcher(username).matches()) {
+        if (!USERNAME_PATH_PATTERN.matcher(username).matches()) {
             throw new IllegalArgumentException("用户名包含非法字符: " + username);
         }
         return username;
@@ -151,6 +154,40 @@ public class WorkspaceService {
                 .forEach(p -> out.add(root.relativize(p).toString()));
         }
         return out;
+    }
+
+    /**
+     * 计算用户所有仓库的磁盘占用总量（单位 MB，向上取整）。
+     * 遍历 {workspacesRoot}/{username}/ 下所有文件，排除各仓库的 .git 目录。
+     * 用户工作区目录不存在时返回 0。
+     */
+    public long calculateDiskUsage(Long userId) {
+        String username = resolveUsername(userId);
+        Path userRoot = props.workspacesRoot().resolve(username);
+        if (!Files.exists(userRoot)) return 0;
+        long[] totalBytes = {0};
+        try (Stream<Path> walk = Files.walk(userRoot)) {
+            walk.filter(Files::isRegularFile)
+                .filter(p -> {
+                    // 排除任意层级的 .git 目录内文件
+                    for (Path seg : userRoot.relativize(p)) {
+                        if (".git".equals(seg.toString())) return false;
+                    }
+                    return true;
+                })
+                .forEach(p -> {
+                    try {
+                        totalBytes[0] += Files.size(p);
+                    } catch (IOException ignored) {
+                        // 文件可能在遍历期间被删除，忽略
+                    }
+                });
+        } catch (IOException e) {
+            log.warn("计算磁盘占用失败: user={} path={}", userId, userRoot, e);
+            return 0;
+        }
+        // 字节 → MB，向上取整
+        return (totalBytes[0] + (1024 * 1024 - 1)) / (1024 * 1024);
     }
 
     /**

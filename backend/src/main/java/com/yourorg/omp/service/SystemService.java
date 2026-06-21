@@ -4,6 +4,7 @@ import com.yourorg.omp.entity.*;
 import com.yourorg.omp.repo.*;
 import com.yourorg.omp.admin.AdminConfigService;
 import com.yourorg.omp.security.CurrentUser;
+import com.yourorg.omp.workspace.WorkspaceService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -35,12 +36,17 @@ public class SystemService {
     private static final String DEFAULT_ROLE_CODE = "default_user";
     private static final String DEFAULT_ROLE_NAME = "普通用户";
 
+    /** 内置全局角色编码（tenant_id 为 NULL，需预先在数据库中建好）。 */
+    private static final String ORDINARY_ROLE_CODE = "ordinary-user-role";
+    private static final String MANAGE_ROLE_CODE = "manage-user-role";
+
     /** 统一按创建时间倒序排列。 */
     private static final Sort CREATED_DESC = Sort.by(Sort.Direction.DESC, "createdAt");
 
     /** 用户名规则：英文/数字/中划线，1-32 字符。仅用于登录。 */
+    /** 用户名规则：英文/数字/中划线/下划线，1-32 字符。仅用于登录。 */
     private static final java.util.regex.Pattern USERNAME_PATTERN =
-            java.util.regex.Pattern.compile("^[A-Za-z0-9-]{1,32}$");
+            java.util.regex.Pattern.compile("^[A-Za-z0-9_-]{1,32}$");
 
     private final CurrentUser currentUser;
     private final UserRepository users;
@@ -52,6 +58,7 @@ public class SystemService {
     private final ModelConfigRepository modelConfigs;
     private final AdminConfigService adminConfig;
     private final BCryptPasswordEncoder encoder;
+    private final WorkspaceService workspace;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SystemService(CurrentUser currentUser,
@@ -63,7 +70,8 @@ public class SystemService {
                          RoleMenuRepository roleMenus,
                          ModelConfigRepository modelConfigs,
                          AdminConfigService adminConfig,
-                         BCryptPasswordEncoder encoder) {
+                         BCryptPasswordEncoder encoder,
+                         WorkspaceService workspace) {
         this.currentUser = currentUser;
         this.users = users;
         this.tenants = tenants;
@@ -74,6 +82,7 @@ public class SystemService {
         this.modelConfigs = modelConfigs;
         this.adminConfig = adminConfig;
         this.encoder = encoder;
+        this.workspace = workspace;
     }
 
     // ==================== 租户过滤 ====================
@@ -120,9 +129,9 @@ public class SystemService {
 
     @Transactional
     public Map<String, Object> createUser(String username, String name, String password, String identityLevel,
-                                           Long tenantId, List<Long> roleIds) {
+                                           Long tenantId, List<Long> roleIds, Integer diskLimitMb, Long tokenLimit) {
         if (username == null || !USERNAME_PATTERN.matcher(username).matches()) {
-            throw new IllegalArgumentException("用户名只能包含英文、数字和中划线，且不超过 32 个字符");
+            throw new IllegalArgumentException("用户名只能包含英文、数字、中划线和下划线，且不超过 32 个字符");
         }
         if (users.existsByUsername(username)) {
             throw new IllegalArgumentException("用户名已存在");
@@ -159,13 +168,19 @@ public class SystemService {
         u.setIdentityLevel(idLevel);
         u.setTenantId(tenantId);
         u.setEnabled(true);
+        if (diskLimitMb != null && diskLimitMb > 0) {
+            u.setDiskLimitMb(diskLimitMb);
+        }
+        if (tokenLimit != null && tokenLimit >= 0) {
+            u.setTokenLimit(tokenLimit);
+        }
         users.save(u);
 
-        // 自动分配默认角色
+        // 显式指定了角色则按指定分配，否则按身份分配内置基础角色
         if (roleIds != null && !roleIds.isEmpty()) {
             assignRoles(u.getId(), roleIds);
-        } else if (tenantId != null) {
-            assignDefaultRole(u.getId(), tenantId);
+        } else {
+            assignBaseRole(u.getId(), "admin".equals(idLevel));
         }
 
         log.info("User created: {} (identity={}, tenant={})", username, u.getIdentityLevel(), tenantId);
@@ -173,15 +188,23 @@ public class SystemService {
     }
 
     @Transactional
-    public Map<String, Object> updateUser(Long userId, String name, String identityLevel, Long tenantId, Boolean enabled) {
+    public Map<String, Object> updateUser(Long userId, String name, String identityLevel, Long tenantId, Boolean enabled, Integer diskLimitMb, Long tokenLimit) {
         User u = users.findById(userId).orElseThrow(() -> new IllegalArgumentException("用户不存在"));
         if (name != null) u.setName(name.isBlank() ? null : name.trim());
         if (identityLevel != null) {
+            boolean wasAdmin = "admin".equals(u.getIdentityLevel());
+            boolean nowAdmin = "admin".equals(identityLevel);
             u.setIdentityLevel(identityLevel);
             u.setRole("admin".equals(identityLevel) || "super_admin".equals(identityLevel) ? "admin" : "user");
+            // 管理员 ↔ 普通用户 切换时同步互换内置基础角色
+            if (wasAdmin != nowAdmin) {
+                switchBaseRole(userId, nowAdmin);
+            }
         }
         if (tenantId != null) u.setTenantId(tenantId);
         if (enabled != null) u.setEnabled(enabled);
+        if (diskLimitMb != null && diskLimitMb > 0) u.setDiskLimitMb(diskLimitMb);
+        if (tokenLimit != null && tokenLimit >= 0) u.setTokenLimit(tokenLimit);
         users.save(u);
         return userToMap(u);
     }
@@ -201,14 +224,28 @@ public class SystemService {
         return true;
     }
 
-    private void assignDefaultRole(Long userId, Long tenantId) {
-        Role defaultRole = roles.findByTenantIdAndRoleCode(tenantId, DEFAULT_ROLE_CODE).orElse(null);
-        if (defaultRole != null) {
+    /** 按身份分配内置全局基础角色：管理员 → manage-user-role，普通用户 → ordinary-user-role。 */
+    private void assignBaseRole(Long userId, boolean isAdmin) {
+        String roleCode = isAdmin ? MANAGE_ROLE_CODE : ORDINARY_ROLE_CODE;
+        Role role = roles.findByTenantIdIsNullAndRoleCode(roleCode).orElse(null);
+        if (role == null) {
+            log.warn("内置全局角色 {} 不存在，跳过基础角色分配（userId={}）", roleCode, userId);
+            return;
+        }
+        if (!userRoles.existsByUserIdAndRoleId(userId, role.getId())) {
             UserRole ur = new UserRole();
             ur.setUserId(userId);
-            ur.setRoleId(defaultRole.getId());
+            ur.setRoleId(role.getId());
             userRoles.save(ur);
         }
+    }
+
+    /** 管理员 ↔ 普通用户 切换：移除旧基础角色，添加新基础角色。 */
+    private void switchBaseRole(Long userId, boolean toAdmin) {
+        String removeCode = toAdmin ? ORDINARY_ROLE_CODE : MANAGE_ROLE_CODE;
+        roles.findByTenantIdIsNullAndRoleCode(removeCode)
+                .ifPresent(r -> userRoles.deleteByUserIdAndRoleId(userId, r.getId()));
+        assignBaseRole(userId, toAdmin);
     }
 
     private void assignRoles(Long userId, List<Long> roleIds) {
@@ -252,6 +289,18 @@ public class SystemService {
         m.put("tenantName", u.getTenantId() == null ? null : tenantNames.get(u.getTenantId()));
         m.put("roleNames", roleNames);
         m.put("enabled", u.isEnabled());
+        m.put("diskLimitMb", u.getDiskLimitMb());
+        // 单个用户磁盘用量计算失败（如历史脏数据用户名）不应拖垮整张列表，兜底为 0
+        long diskUsageMb;
+        try {
+            diskUsageMb = workspace.calculateDiskUsage(u.getId());
+        } catch (Exception e) {
+            log.warn("计算用户磁盘用量失败: userId={}, 已兜底为 0", u.getId(), e);
+            diskUsageMb = 0;
+        }
+        m.put("diskUsageMb", diskUsageMb);
+        m.put("tokenLimit", u.getTokenLimit());
+        m.put("tokenUsed", u.getTokenUsed());
         m.put("createdAt", u.getCreatedAt() == null ? null : u.getCreatedAt().toString());
         m.put("lastLoginAt", u.getLastLoginAt() == null ? null : u.getLastLoginAt().toString());
         return m;

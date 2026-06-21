@@ -84,6 +84,10 @@
   --line:       var(--border-strong);
   --line-bold:  var(--ink-mute);
   --bronze:     var(--warn);
+
+  /* --- safe-area (mobile notch / home indicator) --- */
+  --safe-area-top:    env(safe-area-inset-top, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* =====================================================================
@@ -484,3 +488,20 @@ a {
   transition: color var(--dur-fast) var(--ease-out);
 }
 a:hover { color: var(--brand-hover); }
+
+/* =====================================================================
+   Responsive utilities
+   ===================================================================== */
+
+@media (max-width: 768px) {
+  .hide-mobile { display: none !important; }
+  .show-mobile { display: initial; }
+  .full-width-mobile { width: 100% !important; }
+}
+
+@media (min-width: 769px) {
+  .hide-desktop { display: none !important; }
+  .show-desktop { display: initial; }
+}
+
+.show-mobile { display: none; }

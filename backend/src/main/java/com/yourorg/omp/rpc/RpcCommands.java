@@ -133,4 +133,27 @@ public final class RpcCommands {
         if (outputPath != null) n.put("outputPath", outputPath);
         return n;
     }
+
+    // =========================================================================
+    // extension_ui_response — 回复 omp 发起的 UI 请求 (select/confirm/input/editor)
+    // =========================================================================
+
+    /** 构建 extension_ui_response 帧,携带用户选择的值。 */
+    public static ObjectNode extensionUiResponse(String id, String value) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "extension_ui_response");
+        node.put("id", id);
+        node.put("value", value);
+        return node;
+    }
+
+    /** 构建 extension_ui_response 帧,表示用户取消了对话框。 */
+    public static ObjectNode extensionUiResponseCancelled(String id, boolean timedOut) {
+        ObjectNode node = MAPPER.createObjectNode();
+        node.put("type", "extension_ui_response");
+        node.put("id", id);
+        node.put("cancelled", true);
+        if (timedOut) node.put("timedOut", true);
+        return node;
+    }
 }

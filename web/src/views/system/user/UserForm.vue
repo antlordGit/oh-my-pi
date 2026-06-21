@@ -13,15 +13,17 @@ const username = ref(props.user?.username || '')
 const name = ref(props.user?.name || '')
 const password = ref('')
 const identityLevel = ref(props.user?.identityLevel || 'user')
+const diskLimitMb = ref(props.user?.diskLimitMb ?? 100)
+const tokenLimit = ref(props.user?.tokenLimit ?? 0)
 const editMode = !!props.user
 
-/** 用户名规则：英文/数字/中划线，1-32 字符。仅用于登录。 */
-const USERNAME_PATTERN = /^[A-Za-z0-9-]{1,32}$/
+/** 用户名规则：英文/数字/中划线/下划线，1-32 字符。仅用于登录。 */
+const USERNAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
 
 async function handleSubmit() {
   if (!username.value) { msg.error('用户名不能为空'); return }
   if (!editMode && !USERNAME_PATTERN.test(username.value)) {
-    msg.error('用户名只能包含英文、数字和中划线，且不超过 32 个字符'); return
+    msg.error('用户名只能包含英文、数字、中划线和下划线，且不超过 32 个字符'); return
   }
   if (!editMode && !password.value) { msg.error('密码不能为空'); return }
   loading.value = true
@@ -30,6 +32,8 @@ async function handleSubmit() {
       const params: UpdateUserParams = {
         name: name.value || undefined,
         identityLevel: identityLevel.value,
+        diskLimitMb: diskLimitMb.value,
+        tokenLimit: tokenLimit.value,
       }
       await updateUser(props.user.id, params)
       msg.success('已更新')
@@ -39,6 +43,8 @@ async function handleSubmit() {
         name: name.value || undefined,
         password: password.value,
         identityLevel: identityLevel.value,
+        diskLimitMb: diskLimitMb.value,
+        tokenLimit: tokenLimit.value,
       }
       await createUser(params)
       msg.success('已创建')
@@ -63,7 +69,7 @@ async function handleSubmit() {
         <form class="modal-body" @submit.prevent="handleSubmit">
           <label class="field">
             <span>用户名 <small style="color:var(--ink-mute);font-weight:normal">（登录用，创建后不可改）</small></span>
-            <input v-model="username" class="field-input" :disabled="editMode" maxlength="32" placeholder="英文、数字或中划线，最多 32 字符" />
+            <input v-model="username" class="field-input" :disabled="editMode" maxlength="32" placeholder="英文、数字、中划线或下划线，最多 32 字符" />
           </label>
           <label class="field">
             <span>姓名 <small style="color:var(--ink-mute);font-weight:normal">（展示用）</small></span>
@@ -80,6 +86,14 @@ async function handleSubmit() {
               <option value="admin">管理员</option>
               <option value="super_admin">超级管理员</option>
             </select>
+          </label>
+          <label class="field">
+            <span>磁盘限额 <small style="color:var(--ink-mute);font-weight:normal">（MB，默认 100）</small></span>
+            <input v-model.number="diskLimitMb" class="field-input" type="number" min="1" placeholder="磁盘空间限额（MB）" />
+          </label>
+          <label class="field">
+            <span>Token 额度 <small style="color:var(--ink-mute);font-weight:normal">（0 表示不限）</small></span>
+            <input v-model.number="tokenLimit" class="field-input" type="number" min="0" placeholder="大模型 Token 额度上限" />
           </label>
           <footer class="modal-footer">
             <button type="button" class="btn-ghost" @click="emit('close')">取消</button>

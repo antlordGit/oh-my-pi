@@ -4,12 +4,14 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   getSession, getMessages, getState,
   prompt, abort as abortSession, unarchive as unarchiveSession, newSession as newSessionRpc, wsUrl,
+  openSessionIde,
   type SessionSummary,
 } from '@/api/session'
 import { useMessage } from 'naive-ui'
 import MessageBubble from '@/components/MessageBubble.vue'
 import ToolCard from '@/components/ToolCard.vue'
 import WorkspaceTree from '@/components/WorkspaceTree.vue'
+import UiRequestDialog from '@/components/UiRequestDialog.vue'
 import { api } from '@/api/http'
 
 const route = useRoute()
@@ -45,6 +47,19 @@ const isArchived = ref(false)
 const restoringArchive = ref(false)
 const showThinking = ref(true)
 const showWorkspaceTree = ref(false)
+
+// omp ask 工具发起的 UI 请求 (extension_ui_request 帧)
+interface UiRequest {
+  id: string
+  method: 'select' | 'confirm' | 'input' | 'editor'
+  title: string
+  options?: string[]
+  message?: string
+  placeholder?: string
+  prefill?: string
+  timeout?: number
+}
+const uiRequest = ref<UiRequest | null>(null)
 
 const gridComputed = computed(() =>
   !isArchived.value && showWorkspaceTree.value
@@ -181,12 +196,42 @@ function extractText(content: any): string {
   return ''
 }
 
+const ws = ref<WebSocket | null>(null)
+let wsDisposed = false        // 组件已卸载,禁止复活
+let reconnectAttempts = 0     // 重连次数(指数退避)
+const MAX_RECONNECT = 5       // 最大重连次数
+const BASE_DELAY = 1500       // 基础回退 ms
+
 function connectWs() {
+  if (wsDisposed) return
   if (!sessionId.value || sessionId.value === 'undefined') return
+  // 无 token 直接跳登录,不发起空 token 连接
+  const token = localStorage.getItem('omp.token')
+  if (!token) {
+    msg.warning('登录已失效,请重新登录')
+    router.push('/login')
+    return
+  }
   if (ws.value) try { ws.value.close() } catch {}
   const s = new WebSocket(wsUrl(sessionId.value))
   s.onmessage = (ev) => { let frame: any; try { frame = JSON.parse(ev.data) } catch { return }; handleFrame(frame) }
-  s.onclose = () => { setTimeout(connectWs, 1500) }
+  s.onclose = (ev) => {
+    if (wsDisposed) return  // 组件已卸载,不再重连
+    // 鉴权失败(1003 NOT_ACCEPTABLE 或自定义 4001)不重连,提示并跳登录
+    if (ev.code === 1003 || ev.code === 4001) {
+      msg.warning('登录已失效,请重新登录')
+      router.push('/login')
+      return
+    }
+    // 其余原因:指数退避重连,有上限
+    if (reconnectAttempts >= MAX_RECONNECT) {
+      msg.error('连接中断,请刷新页面重试')
+      return
+    }
+    const delay = BASE_DELAY * Math.pow(2, reconnectAttempts)
+    reconnectAttempts++
+    setTimeout(connectWs, delay)
+  }
   ws.value = s
 }
 
@@ -238,12 +283,54 @@ function handleFrame(frame: any) {
       if (frame.title && session.value) session.value.title = frame.title
       if (frame.sessionFile) refresh()
       break
+    case 'extension_ui_request': {
+      // omp ask 工具发起的 UI 请求
+      const method = frame.method as string
+      // 被动方法 (notify/setStatus/setWidget/setTitle/set_editor_text/open_url) 不弹框
+      if (['notify', 'setStatus', 'setWidget', 'setTitle', 'set_editor_text', 'open_url'].includes(method)) {
+        // notify 可用 msg.info(frame.message) 做轻提示,但暂不实现
+        break
+      }
+      // cancel 方法: 关掉当前弹框
+      if (method === 'cancel') {
+        if (uiRequest.value && uiRequest.value.id === frame.targetId) {
+          uiRequest.value = null
+        }
+        break
+      }
+      // 需要用户交互的方法: select / confirm / input / editor
+      uiRequest.value = {
+        id: frame.id,
+        method: method as UiRequest['method'],
+        title: frame.title || '',
+        options: frame.options,
+        message: frame.message,
+        placeholder: frame.placeholder,
+        prefill: frame.prefill,
+        timeout: frame.timeout,
+      }
+      break
+    }
   }
   scrollToBottom()
 }
 const toolCallById: Record<string, TimelineItem & { id: string; name: string; status: 'running'|'done'; result?: any; error?: boolean }> = {}
 
-const ws = ref<WebSocket | null>(null)
+/** 发送 extension_ui_response 回复 omp 的 UI 请求 */
+function sendUiResponse(id: string, value: string | boolean | null, cancelled: boolean) {
+  if (!ws.value) return
+  const frame: any = { type: 'extension_ui_response', id }
+  if (cancelled) {
+    frame.cancelled = true
+  } else if (typeof value === 'boolean') {
+    frame.confirmed = value
+  } else {
+    frame.value = value
+  }
+  ws.value.send(JSON.stringify(frame))
+  uiRequest.value = null
+}
+
 function scrollToBottom() { nextTick(() => { if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight }) }
 
 async function send() {
@@ -410,9 +497,36 @@ function previewText(text: string): string {
 
 const canRewind = computed(() => turnLog.value.length > 0)
 
+// ---- 澄清式提问表单 ------------------------------------------------------
+// 把助手 turn 里的文本解析成可勾选表单，并「内联」渲染在该 turn 内部——
+// 这样它是历史记录的一部分，发送新消息后依然保留，不会回退成纯文本。
+// 流式中、归档会话、或用户已点「以纯文本查看」的 turn 不渲染表单。
+
+type Turn = { role: 'user' | 'assistant'; timeline: TimelineItem[]; userText?: string }
+
+/** 打开 IDE（code-server/openvscode-server），在新标签页中加载工作区 */
+async function openIde() {
+  if (!sessionId.value) {
+    msg.error('会话不存在')
+    return
+  }
+  try {
+    const { url } = await openSessionIde(sessionId.value)
+    window.open(url, '_blank')
+  } catch (e: any) {
+    msg.error(e?.response?.data?.error || e?.message || '打开 IDE 失败')
+  }
+}
+
 watch(() => timeline.value.length, scrollToBottom)
 onMounted(async () => { await refresh(); if (!isArchived.value) connectWs() })
-onUnmounted(() => { if (ws.value) try { ws.value.close() } catch {} })
+onUnmounted(() => {
+  wsDisposed = true
+  if (ws.value) {
+    ws.value.onclose = null  // 先清掉 onclose,避免 close 触发复活
+    try { ws.value.close() } catch {}
+  }
+})
 
 const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
 
@@ -431,7 +545,7 @@ const composedAt = computed(() => {
         <span>返回</span>
       </button>
       <div class="topbar-meta">
-        <span class="serial">{{ sessionId.slice(0, 8) }}</span>
+        <span class="serial">{{ session?.repoId || '—' }}</span>
         <h1 class="session-title">{{ session?.title || '未命名会话' }}</h1>
       </div>
       <div class="topbar-status">
@@ -439,22 +553,14 @@ const composedAt = computed(() => {
           <span class="status-dot archived"></span>
           <span>已归档</span>
         </span>
-        <span v-else class="status-pill" :class="{ live: isStreaming }">
-          <span v-if="isStreaming" class="live-dot"></span>
-          <span v-else class="status-dot idle"></span>
-          <span>{{ isStreaming ? '生成中' : '空闲' }}</span>
-        </span>
-        <button v-if="!isArchived" class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
-          中断
-        </button>
-        <button v-if="!isArchived" class="btn-mini ws-btn" :class="{ on: showWorkspaceTree }" @click="showWorkspaceTree = !showWorkspaceTree">
-          <span class="caret">▤</span>
-          <span>{{ showWorkspaceTree ? '收起' : '目录' }}</span>
-        </button>
       </div>
     </header>
 
     <aside class="chat-index" v-if="!isArchived && userIndex.length">
+      <button class="btn-mini ide-btn chat-index-ide" @click="openIde">
+        <span class="caret">◈</span>
+        <span>打开 IDE</span>
+      </button>
       <header class="chat-index-head mono">
         <span class="caret">§</span>
         <span>索引</span>
@@ -606,6 +712,21 @@ const composedAt = computed(() => {
           </template>
         </div>
       </div>
+
+      <!-- UI 请求对话框 (omp ask 工具发起) -->
+      <div v-if="uiRequest" class="turn ui-request-turn">
+        <div class="turn-gutter">
+          <span class="turn-num mono accent">◆</span>
+          <span class="turn-role accent">等待输入</span>
+        </div>
+        <div class="turn-body">
+          <UiRequestDialog
+            :request="uiRequest"
+            @submit="(id, value) => sendUiResponse(id, value, false)"
+            @cancel="(id) => sendUiResponse(id, null, true)"
+          />
+        </div>
+      </div>
     </main>
 
     <!-- Composer — hidden for archived sessions -->
@@ -619,14 +740,20 @@ const composedAt = computed(() => {
           <span class="caret">+</span>
           <span>新对话</span>
         </button>
-        <span class="serial dim rewind-hint">回退到上一轮检查点 · 新对话清空当前 leaf</span>
+        <button v-if="!isArchived" class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
+          中断
+        </button>
+        <span class="rewind-hint"></span>
       </div>
       <div class="composer-toolbar" v-else>
         <button class="btn-mini new-btn" :disabled="sending || isStreaming" @click="doNew">
           <span class="caret">+</span>
           <span>新对话</span>
         </button>
-        <span class="serial dim rewind-hint">开始新对话（清空当前 leaf）</span>
+        <button v-if="!isArchived" class="btn-mini-danger abort-btn" :disabled="!isStreaming" @click="doAbort">
+          中断
+        </button>
+        <span class="rewind-hint"></span>
       </div>
       <textarea
         v-model="input"
@@ -702,6 +829,22 @@ const composedAt = computed(() => {
 }
 .chat-index-head .caret { color: var(--brand); }
 .chat-index-head .dim { color: var(--ink-faint); margin-left: auto; }
+.chat-index-ide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 10px 10px 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.chat-index-ide:hover { color: var(--brand); border-color: var(--brand); }
 .chat-index-list {
   list-style: none;
   margin: 0;
@@ -828,6 +971,20 @@ const composedAt = computed(() => {
 .ws-btn:hover { color: var(--brand); border-color: var(--brand); }
 .ws-btn.on { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
 .ws-btn.on:hover { background: var(--brand-hover); }
+.ide-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.ide-btn:hover { color: var(--brand); border-color: var(--brand); }
 
 /* ====================================================================
    Archived block
@@ -1098,5 +1255,6 @@ const composedAt = computed(() => {
   .turn-gutter { align-items: flex-start; text-align: left; }
   .composer-foot { flex-direction: column; align-items: stretch; }
   .send-btn { width: 100%; }
+  .composer-foot .abort-btn { width: 100%; margin-top: 6px; }
 }
 </style>

@@ -5,6 +5,7 @@ Asks user when you need clarification or input during task execution.
 </conditions>
 
 <instruction>
+- **ALWAYS use this tool** when you need user clarification on design decisions, tech stack choices, or preference questions — NEVER write a prose question with a bullet list instead
 - Use `recommended: <index>` to mark default (0-indexed); " (Recommended)" added automatically
 - Use `questions` for multiple related questions instead of asking one at a time
 - Set `multi: true` on question to allow multiple selections

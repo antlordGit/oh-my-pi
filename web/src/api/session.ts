@@ -25,6 +25,12 @@ export async function getSession(sessionId: string): Promise<SessionSummary> {
   return r.data
 }
 
+/** 打开 IDE，返回 code-server/openvscode-server 的直连 URL */
+export async function openSessionIde(sessionId: string): Promise<{ url: string }> {
+  const r = await api.post(`/api/sessions/${sessionId}/ide/open`)
+  return r.data
+}
+
 export async function getState(sessionId: string): Promise<any> {
   const r = await api.get(`/api/sessions/${sessionId}/state`)
   return r.data

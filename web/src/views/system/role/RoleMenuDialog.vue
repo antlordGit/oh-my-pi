@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
+import { ElTree } from 'element-plus'
 import { listMenus, getRole, assignRoleMenus, type MenuInfo } from '@/api/system'
 
 const props = defineProps<{ roleId: number }>()
@@ -9,77 +10,43 @@ const msg = useMessage()
 
 const loading = ref(false)
 const menus = ref<MenuInfo[]>([])
-const selectedMenuIds = ref<Set<number>>(new Set())
-const expanded = ref<Set<number>>(new Set([0]))
-// 子菜单 id -> 父菜单 id，用于勾选时自动选中上级
-const parentMap = ref<Map<number, number>>(new Map())
+const treeRef = ref<InstanceType<typeof ElTree>>()
+// 角色已有的菜单 id（用于初始化勾选）
+const checkedKeys = ref<number[]>([])
 
-function buildParentMap(items: MenuInfo[], parentId: number | null = null) {
+const treeProps = { children: 'children', label: 'menuName' }
+
+/** 收集所有叶子节点 id（无子节点的菜单）。 */
+function collectLeafIds(items: MenuInfo[], acc: Set<number>) {
   for (const m of items) {
-    if (parentId !== null) parentMap.value.set(m.id, parentId)
     if (m.children && m.children.length > 0) {
-      buildParentMap(m.children, m.id)
+      collectLeafIds(m.children, acc)
+    } else {
+      acc.add(m.id)
     }
   }
-}
-
-function flattenMenus(items: MenuInfo[], level = 0): { item: MenuInfo; level: number }[] {
-  const result: { item: MenuInfo; level: number }[] = []
-  for (const m of items) {
-    result.push({ item: m, level })
-    if (m.children && m.children.length > 0 && expanded.value.has(m.id)) {
-      result.push(...flattenMenus(m.children, level + 1))
-    }
-  }
-  return result
-}
-const flatList = ref<{ item: MenuInfo; level: number }[]>([])
-
-function rebuildFlatList() {
-  flatList.value = flattenMenus(menus.value)
-}
-
-function toggleExpand(id: number) {
-  const s = new Set(expanded.value)
-  if (s.has(id)) s.delete(id); else s.add(id)
-  expanded.value = s
-  rebuildFlatList()
-}
-
-function toggleMenu(menuId: number) {
-  const s = new Set(selectedMenuIds.value)
-  if (s.has(menuId)) {
-    s.delete(menuId)
-  } else {
-    s.add(menuId)
-    // 选中时自动勾选所有上级菜单（支持多级）
-    let pid = parentMap.value.get(menuId)
-    while (pid !== undefined) {
-      s.add(pid)
-      pid = parentMap.value.get(pid)
-    }
-  }
-  selectedMenuIds.value = s
 }
 
 async function load() {
   menus.value = await listMenus(true)
-  buildParentMap(menus.value)
   const role = await getRole(props.roleId)
-  if (role.menuIds) {
-    selectedMenuIds.value = new Set(role.menuIds)
-  }
-  // 默认展开根节点
-  for (const m of menus.value) {
-    expanded.value.add(m.id)
-  }
-  rebuildFlatList()
+  const stored = new Set(role.menuIds ?? [])
+  // el-tree 非严格模式下传入父节点会级联勾选全部子节点，导致过度选中；
+  // 只用已存储的叶子节点初始化，父节点的全选/半选状态由 el-tree 自动推算。
+  const leafIds = new Set<number>()
+  collectLeafIds(menus.value, leafIds)
+  checkedKeys.value = [...stored].filter((id) => leafIds.has(id))
 }
 
 async function handleSave() {
+  if (!treeRef.value) return
   loading.value = true
   try {
-    await assignRoleMenus(props.roleId, [...selectedMenuIds.value])
+    // 全选节点 + 半选父节点：父节点处于半选时也需持久化，否则上级菜单会丢失
+    const checked = treeRef.value.getCheckedKeys(false) as number[]
+    const halfChecked = treeRef.value.getHalfCheckedKeys() as number[]
+    const menuIds = [...new Set([...checked, ...halfChecked])]
+    await assignRoleMenus(props.roleId, menuIds)
     msg.success('菜单权限已配置')
     emit('saved')
   } catch (e: any) {
@@ -104,31 +71,23 @@ onMounted(load)
           <p class="hint">为角色 <strong>{{ roleId }}</strong> 选择可访问的菜单</p>
           <div v-if="!menus.length" class="dim" style="text-align:center;padding:20px">暂无菜单</div>
           <div v-else class="menu-tree">
-            <div
-              v-for="{ item, level } in flatList"
-              :key="item.id"
-              class="tree-row"
-              :style="{ paddingLeft: `${12 + level * 24}px` }"
+            <el-tree
+              ref="treeRef"
+              :data="menus"
+              :props="treeProps"
+              node-key="id"
+              show-checkbox
+              default-expand-all
+              :default-checked-keys="checkedKeys"
             >
-              <span
-                v-if="item.children && item.children.length"
-                class="expand-btn"
-                @click="toggleExpand(item.id)"
-              >{{ expanded.has(item.id) ? '▾' : '▸' }}</span>
-              <span v-else class="expand-spacer"></span>
-              <label class="check-item">
-                <input
-                  type="checkbox"
-                  :checked="selectedMenuIds.has(item.id)"
-                  @change="toggleMenu(item.id)"
-                />
-                <span class="check-label">
-                  <span class="mono dim" style="font-size:11px">{{ item.menuCode }}</span>
-                  <span style="margin-left:8px">{{ item.menuName }}</span>
-                  <span class="tag tag-mute" style="margin-left:8px">{{ item.menuType }}</span>
+              <template #default="{ data }">
+                <span class="tree-node">
+                  <span class="mono dim" style="font-size:11px">{{ data.menuCode }}</span>
+                  <span style="margin-left:8px">{{ data.menuName }}</span>
+                  <span class="tag tag-mute" style="margin-left:8px">{{ data.menuType }}</span>
                 </span>
-              </label>
-            </div>
+              </template>
+            </el-tree>
           </div>
           <footer class="modal-footer">
             <button type="button" class="btn-ghost" @click="emit('close')">取消</button>
@@ -163,20 +122,8 @@ onMounted(load)
 .modal-body { display: flex; flex-direction: column; gap: 14px; padding: 20px 24px; }
 .hint { font-size: 13px; color: var(--ink-mute); margin: 0; }
 .hint strong { color: var(--brand); }
-.menu-tree { display: flex; flex-direction: column; }
-.tree-row { display: flex; align-items: center; }
-.expand-btn {
-  width: 20px; font-size: 11px; cursor: pointer; color: var(--ink-mute);
-  text-align: center; flex-shrink: 0;
-}
-.expand-spacer { width: 20px; flex-shrink: 0; }
-.check-item {
-  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
-  border-radius: var(--radius-sm); cursor: pointer; flex: 1;
-  transition: background var(--dur-fast);
-}
-.check-item:hover { background: var(--surface-hover); }
-.check-label { font-size: 13px; }
+.menu-tree { max-height: 420px; overflow-y: auto; }
+.tree-node { display: inline-flex; align-items: center; font-size: 13px; }
 .modal-footer { display: flex; gap: 10px; justify-content: flex-end; }
 .btn-primary {
   padding: 8px 20px; border-radius: var(--radius-pill); border: 0;

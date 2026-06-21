@@ -32,6 +32,15 @@ public class User {
     @Column(nullable = false)
     private boolean enabled = true;
 
+    @Column(name = "disk_limit_mb", nullable = false)
+    private int diskLimitMb = 100;
+
+    @Column(name = "token_limit", nullable = false)
+    private long tokenLimit = 0;
+
+    @Column(name = "token_used", nullable = false)
+    private long tokenUsed = 0;
+
     @Column(name = "created_at", nullable = false, updatable = false, insertable = false)
     private Instant createdAt;
 
@@ -54,6 +63,12 @@ public class User {
     public void setTenantId(Long tenantId) { this.tenantId = tenantId; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public int getDiskLimitMb() { return diskLimitMb; }
+    public void setDiskLimitMb(int diskLimitMb) { this.diskLimitMb = diskLimitMb; }
+    public long getTokenLimit() { return tokenLimit; }
+    public void setTokenLimit(long tokenLimit) { this.tokenLimit = tokenLimit; }
+    public long getTokenUsed() { return tokenUsed; }
+    public void setTokenUsed(long tokenUsed) { this.tokenUsed = tokenUsed; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getLastLoginAt() { return lastLoginAt; }
     public void setLastLoginAt(Instant lastLoginAt) { this.lastLoginAt = lastLoginAt; }

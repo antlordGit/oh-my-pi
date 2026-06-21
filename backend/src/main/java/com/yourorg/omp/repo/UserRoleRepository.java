@@ -19,5 +19,11 @@ public interface UserRoleRepository extends JpaRepository<UserRole, Long> {
     @Query("DELETE FROM UserRole ur WHERE ur.userId = :userId")
     void deleteByUserId(@Param("userId") Long userId);
 
+    boolean existsByUserIdAndRoleId(Long userId, Long roleId);
+
+    @Modifying
+    @Query("DELETE FROM UserRole ur WHERE ur.userId = :userId AND ur.roleId = :roleId")
+    void deleteByUserIdAndRoleId(@Param("userId") Long userId, @Param("roleId") Long roleId);
+
     List<UserRole> findByRoleId(Long roleId);
 }

@@ -7,6 +7,10 @@ spring:
     active: ${SPRING_PROFILES_ACTIVE:prod}
   application:
     name: omp-backend
+  servlet:
+    multipart:
+      max-file-size: 500MB
+      max-request-size: 500MB
 
 # Application config — see OmpProperties
 app:
@@ -27,14 +31,17 @@ app:
     default-model:
       provider: anthropic
       model-id: claude-sonnet-4-5
-  security:
-    jwt-secret: ${OMP_JWT_SECRET:local-dev-secret-please-change-32chars-or-more-yes}
-    jwt-ttl-hours: 24
-    bootstrap-admin:
-      username: ${OMP_BOOTSTRAP_ADMIN_USERNAME:admin}
-      password: ${OMP_BOOTSTRAP_ADMIN_PASSWORD:admin}
-  vault:
-    api-key: ${OMP_API_KEY:}
+    security:
+      jwt-secret: ${OMP_JWT_SECRET:local-dev-secret-please-change-32chars-or-more-yes}
+      jwt-ttl-hours: 24
+      bootstrap-admin:
+        username: ${OMP_BOOTSTRAP_ADMIN_USERNAME:admin}
+        password: ${OMP_BOOTSTRAP_ADMIN_PASSWORD:admin}
+    vault:
+      api-key: ${OMP_API_KEY:}
+    ide:
+      enabled: ${OMP_IDE_ENABLED:true}
+      public-base-url: ${OMP_IDE_PUBLIC_BASE_URL:http://localhost:3000}
 
 logging:
   level:

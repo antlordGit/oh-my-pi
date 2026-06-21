@@ -352,7 +352,7 @@ Java 端 `ProcessBuilder` 模拟：
 
 ```bash
 ~/bin/omp \
-  --mode rpc \
+  --mode rpc-ui \
   --thinking medium \
   --approval-mode write \
   --tools read,edit,write,bash,grep,find,ls \
@@ -371,6 +371,8 @@ Java 端 `ProcessBuilder` 模拟：
 #!/bin/bash
 exec /opt/homebrew/bin/bun /Users/chenzhiwei/work/github/oh-my-pi-main/packages/coding-agent/src/cli.ts "$@"
 ```
+
+**重要：本机 omp 即源码运行，改动 `packages/coding-agent/src/` 后无需重建，重启后端（或 kill 旧 omp 进程）即生效。**
 
 ---
 
