@@ -3,7 +3,7 @@ import { onMounted, ref, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog } from 'naive-ui'
-import { listSessions, createSession, archive, unarchive, type SessionSummary } from '@/api/session'
+import { listSessions, createSession, archive, unarchive, deleteArchivedSession, type SessionSummary } from '@/api/session'
 import { listRepos, createRepo, importRepo, copyRepo, deleteRepo, exportRepo, type Repo } from '@/api/repo'
 
 const router = useRouter()
@@ -276,6 +276,106 @@ async function onUnarchive(id: string) {
   catch (e: any) { msg.error(e?.response?.data?.error || '恢复失败') }
 }
 
+// ========================================================================
+// 删除（单条 / 批量）—— 与管理台一致的两阶段安全词确认
+// ========================================================================
+const selectedIds = ref<Set<string>>(new Set())
+const MAX_BATCH_DELETE = 50
+const batchDeleting = ref(false)
+
+const archivedPageIds = computed(() =>
+  filteredSessions.value.filter(s => effectiveStatus(s) === 'archived').map(s => s.sessionId)
+)
+const allCurrentSelected = computed(() =>
+  archivedPageIds.value.length > 0
+  && archivedPageIds.value.every(id => selectedIds.value.has(id))
+)
+const someCurrentSelected = computed(() =>
+  archivedPageIds.value.some(id => selectedIds.value.has(id)) && !allCurrentSelected.value
+)
+
+function toggleSelectAll() {
+  if (allCurrentSelected.value) {
+    for (const id of archivedPageIds.value) selectedIds.value.delete(id)
+  } else {
+    if (selectedIds.value.size + archivedPageIds.value.length > MAX_BATCH_DELETE) {
+      msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条，请分批操作`)
+      const room = Math.max(0, MAX_BATCH_DELETE - selectedIds.value.size)
+      for (const id of archivedPageIds.value.slice(0, room)) selectedIds.value.add(id)
+    } else {
+      for (const id of archivedPageIds.value) selectedIds.value.add(id)
+    }
+  }
+  selectedIds.value = new Set(selectedIds.value)
+}
+
+function toggleSelectOne(id: string) {
+  if (selectedIds.value.has(id)) selectedIds.value.delete(id)
+  else {
+    if (selectedIds.value.size >= MAX_BATCH_DELETE) { msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条`); return }
+    selectedIds.value.add(id)
+  }
+  selectedIds.value = new Set(selectedIds.value)
+}
+
+function clearSelection() { selectedIds.value = new Set() }
+
+function confirmDelete(id: string) {
+  const row = filteredSessions.value.find(s => s.sessionId === id)
+  const label = row?.title || '未命名会话'
+  dialog.warning({
+    title: '删除会话',
+    content: `确认删除会话「${label}」？`,
+    positiveText: '确认删除',
+    negativeText: '取消',
+    closable: true,
+    onPositiveClick: () => { void deleteOne(id) },
+  })
+}
+
+async function deleteOne(id: string) {
+  const row = filteredSessions.value.find(s => s.sessionId === id)
+  if (row) (row as any)._deleting = true
+  try {
+    await deleteArchivedSession(id)
+    msg.success('已删除')
+    selectedIds.value.delete(id)
+    selectedIds.value = new Set(selectedIds.value)
+    // 立即从列表移除，避免重新加载
+    sessions.value = sessions.value.filter(s => s.sessionId !== id)
+  } catch (e: any) {
+    if (row) (row as any)._deleting = false
+    msg.error(e?.response?.data?.error || e?.response?.data?.message || '删除失败')
+  }
+}
+
+function confirmBatchDelete() {
+  const ids = [...selectedIds.value]
+  if (ids.length === 0) return msg.warning('请先勾选要删除的归档会话')
+  if (ids.length > MAX_BATCH_DELETE) return msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条`)
+  dialog.error({
+    title: `批量删除 ${ids.length} 个会话`,
+    content: `即将彻底删除 ${ids.length} 个已归档会话。\n\n会一并清理：\n  · 数据库主行\n  · 3 张审计表记录\n  · 磁盘会话文件\n\n此操作不可恢复，是否继续？`,
+    positiveText: `删除 ${ids.length} 个`,
+    negativeText: '取消',
+    onPositiveClick: () => { void batchDelete(ids) },
+  })
+}
+
+async function batchDelete(ids: string[]) {
+  batchDeleting.value = true
+  let success = 0, failed = 0
+  await Promise.allSettled(ids.map(async (id) => {
+    try { await deleteArchivedSession(id); success++ }
+    catch { failed++ }
+  }))
+  batchDeleting.value = false
+  selectedIds.value = new Set()
+  if (success > 0) msg.success(`已删除 ${success} 个${failed > 0 ? `，${failed} 个失败` : ''}`)
+  else if (failed > 0) msg.error(`全部 ${failed} 个删除失败`)
+  refresh()
+}
+
 function effectiveStatus(s: SessionSummary): 'active' | 'archived' {
   // Prefer admin-side optimistic override (persisted in sessionStorage) --
   // keyed by full UUID; also match on the first 8 chars of the sessionId
@@ -304,22 +404,22 @@ onMounted(refresh)
     <!-- Meta strip — terminal instrumentation -->
     <div class="meta-strip fade-up" style="animation-delay:160ms">
       <div class="meta-cell">
-        <span class="meta-key">repos</span>
+        <span class="meta-key">仓库</span>
         <span class="meta-val mono">{{ repos.length.toString().padStart(2, '0') }}</span>
       </div>
       <span class="meta-sep">·</span>
       <div class="meta-cell">
-        <span class="meta-key">sessions</span>
+        <span class="meta-key">会话</span>
         <span class="meta-val mono">{{ totalSessions.toString().padStart(2, '0') }}</span>
       </div>
       <span class="meta-sep">·</span>
       <div class="meta-cell">
-        <span class="meta-key">live</span>
+        <span class="meta-key">活跃</span>
         <span class="meta-val mono" :class="{ ok: activeCount > 0 }">{{ activeCount.toString().padStart(2, '0') }}</span>
       </div>
       <span class="meta-sep">·</span>
       <div class="meta-cell">
-        <span class="meta-key">archived</span>
+        <span class="meta-key">归档</span>
         <span class="meta-val mono" :class="{ ok: archivedCount > 0 }">{{ archivedCount.toString().padStart(2, '0') }}</span>
       </div>
       <span class="meta-spacer"></span>
@@ -502,35 +602,69 @@ onMounted(refresh)
       </div>
 
       <div v-else class="entries">
+        <!-- 批量删除工具栏（仅在有选择时浮出） -->
+        <Transition name="batchbar">
+          <div v-if="selectedIds.size > 0" class="batch-bar">
+            <span class="batch-count mono">
+              已选 <strong>{{ selectedIds.size }}</strong> / {{ MAX_BATCH_DELETE }}
+            </span>
+            <span class="batch-sep">·</span>
+            <span class="batch-hint">仅可对归档会话执行删除</span>
+            <span class="batch-spacer"></span>
+            <button class="btn-ghost btn-sm" @click.stop="clearSelection">清空选择</button>
+            <button
+              class="btn-mini-danger"
+              :disabled="batchDeleting"
+              @click.stop="confirmBatchDelete"
+            >{{ batchDeleting ? '删除中…' : `批量删除 ${selectedIds.size} 个` }}</button>
+          </div>
+        </Transition>
+
         <article
           v-for="(s, idx) in filteredSessions"
           :key="s.sessionId"
           class="entry card"
+          :class="{ 'is-selected': selectedIds.has(s.sessionId), 'is-deleting': (s as any)._deleting }"
           :style="{ animationDelay: 340 + idx * 60 + 'ms' }"
           @click="router.push('/sessions/' + s.sessionId)"
         >
-          <div class="entry-l">
-            <span class="entry-num">{{ String(idx + 1).padStart(2, '0') }}</span>
-            <span class="status-tag" :class="effectiveStatus(s)">
-              <span class="status-dot"></span>
-              {{ effectiveStatus(s) === 'active' ? '活跃' : '归档' }}
-            </span>
-          </div>
-          <div class="entry-body">
-            <h3 class="entry-title">{{ s.title || '未命名会话' }}</h3>
-            <div class="entry-meta">
-              <span class="meta">
-                <span class="serial">仓库</span>
-                <code class="mono">{{ s.repoId }}</code>
+          <label
+            v-if="effectiveStatus(s) === 'archived'"
+            class="entry-check"
+            :title="selectedIds.has(s.sessionId) ? '取消选择' : '选择以便批量删除'"
+            @click.stop
+          >
+            <input
+              type="checkbox"
+              :checked="selectedIds.has(s.sessionId)"
+              :disabled="(s as any)._deleting || (!selectedIds.has(s.sessionId) && selectedIds.size >= MAX_BATCH_DELETE)"
+              @change="toggleSelectOne(s.sessionId)"
+            />
+          </label>
+          <div class="entry-main">
+            <div class="entry-l">
+              <span class="entry-num">{{ String(idx + 1).padStart(2, '0') }}</span>
+              <span class="status-tag" :class="effectiveStatus(s)">
+                <span class="status-dot"></span>
+                {{ effectiveStatus(s) === 'active' ? '活跃' : '归档' }}
               </span>
-              <span class="meta">
-                <span class="serial">ID</span>
-                <code class="mono">{{ s.sessionId.slice(0, 8) }}</code>
-              </span>
-              <span class="meta">
-                <span class="serial">更新</span>
-                <span class="mono">{{ fmtDate(s.lastActiveAt) }}</span>
-              </span>
+            </div>
+            <div class="entry-body">
+              <h3 class="entry-title">{{ s.title || '未命名会话' }}</h3>
+              <div class="entry-meta">
+                <span class="meta" data-label="仓库">
+                  <span class="serial">仓库</span>
+                  <code class="mono">{{ s.repoId }}</code>
+                </span>
+                <span class="meta" data-label="ID">
+                  <span class="serial">ID</span>
+                  <code class="mono">{{ s.sessionId.slice(0, 8) }}</code>
+                </span>
+                <span class="meta" data-label="更新">
+                  <span class="serial">更新</span>
+                  <span class="mono">{{ fmtDate(s.lastActiveAt) }}</span>
+                </span>
+              </div>
             </div>
           </div>
           <div class="entry-act" @click.stop>
@@ -538,8 +672,24 @@ onMounted(refresh)
               <span>打开</span>
               <span class="caret">→</span>
             </button>
-            <button v-if="effectiveStatus(s) === 'active'" class="btn-mini-danger" @click="onArchive(s.sessionId)">归档</button>
-            <button v-else class="btn-mini-danger" @click="onUnarchive(s.sessionId)">恢复</button>
+            <button
+              v-if="effectiveStatus(s) === 'active'"
+              class="btn-mini-danger"
+              @click="onArchive(s.sessionId)"
+            >归档</button>
+            <button
+              v-else
+              class="btn-mini-danger"
+              :disabled="(s as any)._deleting"
+              @click="onUnarchive(s.sessionId)"
+            >{{ (s as any)._deleting ? '删除中…' : '恢复' }}</button>
+            <button
+              v-if="effectiveStatus(s) === 'archived'"
+              class="btn-mini-danger btn-mini-danger--ghost"
+              :disabled="(s as any)._deleting"
+              :title="`删除会话 ${s.sessionId.slice(0, 8)}`"
+              @click="confirmDelete(s.sessionId)"
+            >{{ (s as any)._deleting ? '删除中…' : '删除' }}</button>
           </div>
         </article>
       </div>
@@ -579,7 +729,10 @@ onMounted(refresh)
   gap: 6px;
   color: var(--ink-mute);
 }
-.meta-key { font-weight: 500; }
+.meta-key {
+  font-weight: 500;
+  letter-spacing: 0.04em;  /* 中文标签不需要字母间距 */
+}
 .meta-val {
   font-size: 13px;
   font-weight: 600;
@@ -940,25 +1093,178 @@ onMounted(refresh)
 }
 
 .entries { display: flex; flex-direction: column; gap: 10px; }
+
+/* ====================================================================
+   Entry card — 水平 flex 三段式：左主信息 / 右操作
+   ==================================================================== */
 .entry {
-  display: grid;
-  grid-template-columns: 132px 1fr auto;
-  gap: 20px;
+  display: flex;
   align-items: center;
+  gap: 20px;
   padding: 18px 22px;
   cursor: pointer;
   animation: fade-up var(--dur-slow) var(--ease-out) both;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.entry:hover { background: var(--surface-hover); }
+.entry.is-selected { background: var(--brand-soft); border-color: var(--brand-soft-2); }
+.entry.is-selected:hover { background: var(--brand-soft-2); }
+.entry.is-deleting { opacity: 0.4; pointer-events: none; }
+
+/* Checkbox 固定 24px 槽位（活跃行也保留占位，align 不抖） */
+.entry-check {
+  flex: 0 0 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+}
+.entry-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--brand);
+}
+
+/* 主信息区：编号 + 状态 | 标题 + meta —— 用 flex 把两组拉开 */
+.entry-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.entry-id {
+  flex: 0 0 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.entry-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+}
+.status-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 500;
+  align-self: flex-start;
+}
+.status-tag.active { background: var(--good-soft); color: var(--good); }
+.status-tag.archived { background: var(--surface-soft); color: var(--ink-mute); border: 1px solid var(--border); }
+.status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+
+/* 主体：标题 + 单行 meta，meta 用 · 分隔 */
+.entry-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.entry-title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0;
+  font-size: 12px;
+  color: var(--ink-mute);
+  font-family: var(--font-mono);
+}
+.meta { display: inline-flex; align-items: baseline; gap: 6px; }
+.meta + .meta::before {
+  content: '·';
+  margin: 0 10px;
+  color: var(--ink-faint);
+}
+.meta .serial { font-size: 10px; letter-spacing: 0.06em; }
+.meta code, .meta .mono { font-family: var(--font-mono); color: var(--ink-2); font-size: 11px; }
+
+/* 操作区：横向 + flex-wrap，hover/focus 不挤变形 */
+.entry-act {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.entry-act .btn-ghost { padding: 5px 14px; font-size: 12px; gap: 4px; }
+
+/* 批量操作条 */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: linear-gradient(90deg, var(--brand-soft) 0%, transparent 100%);
+  border: 1px solid var(--brand-soft-2);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.batch-count strong { color: var(--brand); font-weight: 600; }
+.batch-sep { color: var(--ink-faint); }
+.batch-hint { color: var(--ink-mute); font-size: 11px; }
+.batch-spacer { flex: 1; }
+
+.batchbar-enter-active, .batchbar-leave-active {
+  transition: max-height 0.22s ease, opacity 0.18s ease, transform 0.18s ease;
+  overflow: hidden;
+}
+.batchbar-enter-from, .batchbar-leave-to {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+}
+.batchbar-enter-to, .batchbar-leave-from {
+  max-height: 60px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 归档行内"删除"按钮：ghost 风格（不抢眼） */
+.btn-mini-danger--ghost {
+  background: transparent;
+  color: var(--ink-mute);
+  border-color: var(--border);
+}
+.btn-mini-danger--ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: #d92d20;
+  border-color: #d92d20;
 }
 .entry-l {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   align-items: flex-start;
+  flex: 0 0 132px;
 }
 .entry-num {
   font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--ink-mute);
+  font-size: 11px;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
 }
 .status-tag {
   display: inline-flex;
@@ -973,7 +1279,7 @@ onMounted(refresh)
 .status-tag.archived { background: var(--surface-soft); color: var(--ink-mute); border: 1px solid var(--border); }
 .status-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 
-.entry-body { min-width: 0; }
+.entry-body { min-width: 0; flex: 1; }
 .entry-title {
   font-family: var(--font-display);
   font-size: 18px;
@@ -981,12 +1287,13 @@ onMounted(refresh)
   margin: 0 0 6px;
   color: var(--ink);
 }
-.entry-meta { display: flex; flex-wrap: wrap; gap: 18px; font-size: 12px; color: var(--ink-mute); }
+.entry-meta { display: flex; flex-wrap: wrap; gap: 0; font-size: 12px; color: var(--ink-mute); }
 .meta { display: inline-flex; align-items: baseline; gap: 6px; }
+.meta + .meta::before { content: '·'; margin: 0 10px; color: var(--ink-faint); }
 .meta .serial { font-size: 10px; letter-spacing: 0.06em; }
 .meta code, .meta .mono { font-family: var(--font-mono); color: var(--ink-2); font-size: 11px; }
 
-.entry-act { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.entry-act { flex: 0 0 auto; }
 .entry-act .btn-ghost { padding: 5px 14px; font-size: 12px; gap: 4px; }
 
 /* ====================================================================
@@ -996,8 +1303,10 @@ onMounted(refresh)
   .page { padding: 16px 16px 48px; }
   .creator-grid { grid-template-columns: 1fr; }
   .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }
-  .entry { grid-template-columns: 1fr; padding: 16px 18px; }
-  .entry-act { flex-direction: row; }
+  .entry { flex-wrap: wrap; padding: 16px 18px; gap: 14px; }
+  .entry-main { flex-basis: 100%; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
+  .entry-l { flex-direction: row; flex: 0 0 auto; align-items: center; gap: 10px; }
+  .entry-act { flex-direction: row; flex-wrap: wrap; }
 }
 
 /* ====================================================================
@@ -1039,9 +1348,33 @@ onMounted(refresh)
   }
   .entry-num { font-size: 11px; }
   .entry-title { font-size: 16px; margin: 0 0 4px; }
-  .entry-meta { gap: 10px; flex-wrap: wrap; }
+
+  /* meta 在窄屏塌成纵向键值对 */
+  .entry-meta {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  /* 隐藏 · 分隔符（已经被 label 替代） */
+  .meta + .meta::before { content: none; margin: 0; }
+  /* 每项前注入 data-label 标签：值 */
+  .entry-meta .meta {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .entry-meta .meta::before {
+    content: attr(data-label);
+    flex: 0 0 60px;
+    font-size: 10px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .entry-meta .meta .serial { display: none; }  /* 标签已通过 ::before 注入 */
   .meta { gap: 4px; }
   .meta .mono { font-size: 10px; }
+
   .entry-act {
     flex-direction: row;
     justify-content: stretch;

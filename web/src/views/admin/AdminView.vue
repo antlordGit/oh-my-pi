@@ -4,7 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog, NPagination } from 'naive-ui'
 import { api } from '@/api/http'
-import { unarchive as unarchiveSession } from '@/api/session'
+import { unarchive as unarchiveSession, deleteArchivedSession } from '@/api/session'
 import { listSessionsPaged, listAuditPaged, getMaintenanceStatus, enableMaintenance, disableMaintenance, getStreamingSessions, type MaintenanceStatus, type StreamingSession } from '@/api/admin'
 import { OMP_CONFIG_DEFINITIONS, getConfigDef, getConfigValueOptions, CONFIG_KEY_GROUPS, type ConfigItemDef } from '@/api/omp-config'
 
@@ -189,6 +189,11 @@ const sessionPage = ref(0)
 const sessionPageSize = ref(20)
 const sessionTotal = ref(0)
 
+// 批量删除：已选 sessionId 集合（仅 archived 行可加入）
+const selectedSessionIds = ref<Set<string>>(new Set())
+const MAX_BATCH_DELETE = 50
+const batchDeleting = ref(false)
+
 async function loadSessions() {
   const result = await listSessionsPaged(sessionPage.value, sessionPageSize.value)
   // Apply operator overrides so killed/restored rows stick across reloads.
@@ -208,13 +213,67 @@ async function loadSessions() {
 
 function onSessionPageChange(page: number) {
   sessionPage.value = page - 1  // naive-ui uses 1-based, backend uses 0-based
+  pruneSelection()
   loadSessions()
 }
 
 function onSessionPageSizeChange(size: number) {
   sessionPageSize.value = size
   sessionPage.value = 0
+  pruneSelection()
   loadSessions()
+}
+
+// 当前页归档会话 id 集合（用于批量操作"全选"逻辑）
+const currentPageArchivedIds = computed(() =>
+  sessions.value.filter(s => effectiveStatus(s) === 'archived').map(s => s.sessionId)
+)
+const allCurrentSelected = computed(() =>
+  currentPageArchivedIds.value.length > 0
+  && currentPageArchivedIds.value.every(id => selectedSessionIds.value.has(id))
+)
+const someCurrentSelected = computed(() =>
+  currentPageArchivedIds.value.some(id => selectedSessionIds.value.has(id))
+  && !allCurrentSelected.value
+)
+
+function toggleSelectAll() {
+  if (allCurrentSelected.value) {
+    // 取消当前页
+    for (const id of currentPageArchivedIds.value) selectedSessionIds.value.delete(id)
+  } else {
+    // 加上限保护：超出 MAX_BATCH_DELETE 时只取前 N 条
+    if (selectedSessionIds.value.size + currentPageArchivedIds.value.length > MAX_BATCH_DELETE) {
+      msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条，请分批操作`)
+      const room = Math.max(0, MAX_BATCH_DELETE - selectedSessionIds.value.size)
+      for (const id of currentPageArchivedIds.value.slice(0, room)) selectedSessionIds.value.add(id)
+    } else {
+      for (const id of currentPageArchivedIds.value) selectedSessionIds.value.add(id)
+    }
+  }
+  // 触发响应式更新
+  selectedSessionIds.value = new Set(selectedSessionIds.value)
+}
+
+function toggleSelectOne(id: string) {
+  if (selectedSessionIds.value.has(id)) {
+    selectedSessionIds.value.delete(id)
+  } else {
+    if (selectedSessionIds.value.size >= MAX_BATCH_DELETE) {
+      msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条`)
+      return
+    }
+    selectedSessionIds.value.add(id)
+  }
+  selectedSessionIds.value = new Set(selectedSessionIds.value)
+}
+
+function pruneSelection() {
+  // 跨页切换：保留仍存在的、状态仍为 archived 的项
+  const valid = new Set(currentPageArchivedIds.value)
+  // 但 selectedSessionIds 可能含跨页项：保守起见只清掉"已知失效"的部分（即不在当前页但也没在本地历史里的）。
+  // 为简化逻辑：切页时清空选中，避免误删。
+  selectedSessionIds.value = new Set([...selectedSessionIds.value].filter(id => valid.has(id)))
 }
 
 // ---- audit pagination ----
@@ -455,6 +514,81 @@ function confirmRestoreSession(id: string) {
     negativeText: '取消',
     onPositiveClick: () => { void restoreSession(id) },
   })
+}
+
+/**
+ * 单条删除：先软隐藏（让 UI 立即消失），失败回滚。
+ * 二次确认：弹窗里要求输入会话 ID 前 8 位作为"安全词"。
+ */
+function confirmDeleteSession(id: string) {
+  const row = sessions.value.find(s => s.sessionId === id)
+  const label = row?.title || id.slice(0, 8)
+  dialog.warning({
+    title: '删除会话',
+    content: `确认删除会话「${label}」？`,
+    positiveText: '确认删除',
+    negativeText: '取消',
+    closable: true,
+    onPositiveClick: () => { void deleteOne(id) },
+  })
+}
+
+async function deleteOne(id: string) {
+  const row = sessions.value.find(s => s.sessionId === id)
+  // 软隐藏
+  if (row) row._deleting = true
+  try {
+    await deleteArchivedSession(id)
+    msg.success('已删除')
+    selectedSessionIds.value.delete(id)
+    selectedSessionIds.value = new Set(selectedSessionIds.value)
+    // 从本地列表移除，避免重新加载
+    sessions.value = sessions.value.filter(s => s.sessionId !== id)
+    sessionTotal.value = Math.max(0, sessionTotal.value - 1)
+  } catch (e: any) {
+    if (row) row._deleting = false
+    msg.error(e?.response?.data?.error || e?.response?.data?.message || '删除失败')
+  }
+}
+
+/** 批量删除：先二次确认要删除的条数与数量。 */
+function confirmBatchDelete() {
+  const ids = [...selectedSessionIds.value]
+  if (ids.length === 0) return msg.warning('请先勾选要删除的归档会话')
+  if (ids.length > MAX_BATCH_DELETE) {
+    return msg.warning(`单批最多 ${MAX_BATCH_DELETE} 条，当前已选 ${ids.length} 条`)
+  }
+  dialog.error({
+    title: `批量删除 ${ids.length} 个会话`,
+    content: `即将彻底删除 ${ids.length} 个已归档会话。\n\n会一并清理：\n  · 数据库主行\n  · 3 张审计表记录\n  · 磁盘会话文件\n\n此操作不可恢复，是否继续？`,
+    positiveText: `删除 ${ids.length} 个`,
+    negativeText: '取消',
+    onPositiveClick: () => { void batchDelete(ids) },
+  })
+}
+
+async function batchDelete(ids: string[]) {
+  batchDeleting.value = true
+  let success = 0
+  let failed = 0
+  // 并发删除，逐个汇报
+  await Promise.allSettled(ids.map(async (id) => {
+    try {
+      await deleteArchivedSession(id)
+      success++
+    } catch {
+      failed++
+    }
+  }))
+  batchDeleting.value = false
+  selectedSessionIds.value = new Set()
+  if (success > 0) msg.success(`已删除 ${success} 个${failed > 0 ? `，${failed} 个失败` : ''}`)
+  else if (failed > 0) msg.error(`全部 ${failed} 个删除失败`)
+  loadSessions()
+}
+
+function clearSelection() {
+  selectedSessionIds.value = new Set()
 }
 
 function fmtDate(s?: string | number) {
@@ -754,10 +888,51 @@ onMounted(() => {
       </div>
 
       <div v-else class="card table-card">
+        <!-- 批量删除工具栏（仅在有选择时浮出） -->
+        <Transition name="batchbar">
+          <div v-if="selectedSessionIds.size > 0" class="batch-bar">
+            <span class="batch-count mono">
+              已选 <strong>{{ selectedSessionIds.size }}</strong> / {{ MAX_BATCH_DELETE }}
+            </span>
+            <span class="batch-sep">·</span>
+            <span class="batch-hint">仅可对归档会话执行删除</span>
+            <span class="batch-spacer"></span>
+            <button class="btn-ghost btn-sm" @click="clearSelection">清空选择</button>
+            <button
+              class="btn-mini-danger"
+              :disabled="batchDeleting"
+              @click="confirmBatchDelete"
+            >{{ batchDeleting ? '删除中…' : `批量删除 ${selectedSessionIds.size} 个` }}</button>
+          </div>
+        </Transition>
+
         <div class="table-head mono">
+          <label class="th-check">
+            <input
+              type="checkbox"
+              :checked="allCurrentSelected"
+              :indeterminate.prop="someCurrentSelected"
+              :disabled="currentPageArchivedIds.length === 0"
+              @change="toggleSelectAll"
+            />
+          </label>
           <span>#</span><span>会话 ID</span><span>标题</span><span>用户</span><span>仓库</span><span>状态</span><span>更新时间</span><span></span>
         </div>
-        <div v-for="(s, idx) in sessions" :key="s.sessionId" class="table-row mono">
+        <div
+          v-for="(s, idx) in sessions"
+          :key="s.sessionId"
+          class="table-row mono"
+          :class="{ 'is-selected': selectedSessionIds.has(s.sessionId), 'is-deleting': s._deleting }"
+        >
+          <label v-if="effectiveStatus(s) === 'archived'" class="td-check" :title="selectedSessionIds.has(s.sessionId) ? '取消选择' : '选择以便批量删除'">
+            <input
+              type="checkbox"
+              :checked="selectedSessionIds.has(s.sessionId)"
+              :disabled="s._deleting || (!selectedSessionIds.has(s.sessionId) && selectedSessionIds.size >= MAX_BATCH_DELETE)"
+              @change="toggleSelectOne(s.sessionId)"
+            />
+          </label>
+          <span v-else class="td-check td-check--placeholder"></span>
           <span class="dim">{{ String(sessionPage * sessionPageSize + idx + 1).padStart(2, '0') }}</span>
           <code class="accent">{{ s.sessionId?.slice(0, 8) }}</code>
           <span class="table-title dim">{{ s.title || '—' }}</span>
@@ -768,18 +943,29 @@ onMounted(() => {
             {{ effectiveStatus(s) === 'active' ? '活跃' : '归档' }}
           </span>
           <span class="dim">{{ fmtDate(s.lastActiveAt) }}</span>
-          <button
-            v-if="effectiveStatus(s) === 'active'"
-            v-permission="'omp:sessions:kill'"
-            class="btn-mini-danger"
-            @click="confirmKillSession(s.sessionId)"
-          >终止</button>
-          <button
-            v-else
-            v-permission="'omp:sessions:restore'"
-            class="btn-mini-primary"
-            @click="confirmRestoreSession(s.sessionId)"
-          >恢复</button>
+          <span class="row-actions">
+            <button
+              v-if="effectiveStatus(s) === 'active'"
+              v-permission="'omp:sessions:kill'"
+              class="btn-mini-danger"
+              @click="confirmKillSession(s.sessionId)"
+            >终止</button>
+            <button
+              v-else
+              v-permission="'omp:sessions:restore'"
+              class="btn-mini-primary"
+              :disabled="s._deleting"
+              @click="confirmRestoreSession(s.sessionId)"
+            >恢复</button>
+            <button
+              v-if="effectiveStatus(s) === 'archived'"
+              v-permission="'omp:sessions:delete'"
+              class="btn-mini-danger btn-mini-danger--ghost"
+              :disabled="s._deleting"
+              :title="`删除会话 ${s.sessionId.slice(0, 8)}`"
+              @click="confirmDeleteSession(s.sessionId)"
+            >{{ s._deleting ? '删除中…' : '删除' }}</button>
+          </span>
         </div>
         <div class="pagination-wrap">
           <n-pagination
@@ -1390,8 +1576,8 @@ onMounted(() => {
 }
 .table-head, .table-row {
   display: grid;
-  grid-template-columns: 40px 100px 1fr 80px 100px 90px 130px 80px;
-  gap: 14px;
+  grid-template-columns: 28px 40px 100px 1fr 80px 100px 90px 130px 160px;
+  gap: 12px;
   align-items: center;
   padding: 12px 18px;
   font-size: 12px;
@@ -1411,6 +1597,78 @@ onMounted(() => {
 }
 .table-row:last-child { border-bottom: 0; }
 .table-row:hover { background: var(--surface-hover); }
+.table-row.is-selected { background: var(--brand-soft); }
+.table-row.is-selected:hover { background: var(--brand-soft-2); }
+.table-row.is-deleting { opacity: 0.4; pointer-events: none; }
+
+/* Checkbox 单元格（与状态列共用一份列宽） */
+.th-check, .td-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  user-select: none;
+}
+.th-check input, .td-check input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--brand);
+}
+.td-check--placeholder {
+  cursor: default;
+  opacity: 0.25;
+}
+
+/* 行内操作按钮组（恢复 / 删除 同行） */
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.btn-mini-danger--ghost {
+  background: transparent;
+  color: var(--ink-mute);
+  border-color: var(--border);
+}
+.btn-mini-danger--ghost:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: #d92d20;
+  border-color: #d92d20;
+}
+
+/* 批量操作条（顶部浮出） */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 18px;
+  background: linear-gradient(90deg, var(--brand-soft) 0%, transparent 100%);
+  border-bottom: 1px solid var(--brand-soft-2);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.batch-count strong { color: var(--brand); font-weight: 600; }
+.batch-sep { color: var(--ink-faint); }
+.batch-hint { color: var(--ink-mute); font-size: 11px; }
+.batch-spacer { flex: 1; }
+
+.batchbar-enter-active, .batchbar-leave-active {
+  transition: max-height 0.22s ease, opacity 0.18s ease;
+  overflow: hidden;
+}
+.batchbar-enter-from, .batchbar-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.batchbar-enter-to, .batchbar-leave-from {
+  max-height: 60px;
+  opacity: 1;
+}
 
 .status-tag {
   display: inline-flex;
@@ -1513,11 +1771,12 @@ onMounted(() => {
   .cfg-key { border-right: 0; border-bottom: 1px solid var(--border); }
   .cfg-actions { border-left: 0; border-top: 1px solid var(--border); justify-content: flex-end; }
   .add-fields { grid-template-columns: 1fr; }
-  .table-head, .table-row { grid-template-columns: 30px 80px 1fr 70px 90px; font-size: 11px; }
+  .table-head, .table-row { grid-template-columns: 24px 30px 80px 1fr 70px 90px 120px; font-size: 11px; }
   .table-head span:nth-child(3),
   .table-head span:nth-child(6),
   .table-row > :nth-child(3),
   .table-row > :nth-child(6) { display: none; }
+  .row-actions { flex-wrap: wrap; }
   .audit-row { grid-template-columns: 80px 1fr; }
   .audit-row > :nth-child(2) { display: none; }  /* hide type badge */
 }

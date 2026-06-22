@@ -19,7 +19,7 @@ spring:
   datasource:
     # ⚠️ 容器内用宿主 docker0 网关访问 MySQL,不是 127.0.0.1
     # 容器重建后 docker0 网关不变,但保险起见 host 用 172.17.0.1
-    url: jdbc:mysql://127.0.0.1:3306/omp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://172.17.0.1:3306/omp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
     password: a5gkwGI$!@Xea
     driver-class-name: com.mysql.cj.jdbc.Driver

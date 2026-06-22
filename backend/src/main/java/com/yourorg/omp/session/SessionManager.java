@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yourorg.omp.audit.AuditService;
 import com.yourorg.omp.entity.SessionMeta;
 import com.yourorg.omp.pool.ProcessPool;
+import com.yourorg.omp.repo.PromptAuditRepository;
+import com.yourorg.omp.repo.ResponseAuditRepository;
 import com.yourorg.omp.repo.SessionMetaRepository;
+import com.yourorg.omp.repo.ToolAuditRepository;
 import com.yourorg.omp.rpc.OmpRpcClient;
 import com.yourorg.omp.rpc.RpcCommands;
 import com.yourorg.omp.security.DataScope;
@@ -14,6 +17,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -33,11 +38,22 @@ public class SessionManager {
     private final SessionMetaRepository repo;
     private final ProcessPool pool;
     private final AuditService audit;
+    private final PromptAuditRepository promptAuditRepo;
+    private final ToolAuditRepository toolAuditRepo;
+    private final ResponseAuditRepository responseAuditRepo;
 
-    public SessionManager(SessionMetaRepository repo, ProcessPool pool, AuditService audit) {
+    public SessionManager(SessionMetaRepository repo,
+                          ProcessPool pool,
+                          AuditService audit,
+                          PromptAuditRepository promptAuditRepo,
+                          ToolAuditRepository toolAuditRepo,
+                          ResponseAuditRepository responseAuditRepo) {
         this.repo = repo;
         this.pool = pool;
         this.audit = audit;
+        this.promptAuditRepo = promptAuditRepo;
+        this.toolAuditRepo = toolAuditRepo;
+        this.responseAuditRepo = responseAuditRepo;
     }
 
     /** Create a new session record. Does NOT spawn a process — that happens on first prompt or state fetch. */
@@ -136,6 +152,83 @@ public class SessionManager {
             m.setLastActiveAt(Instant.now());
             repo.save(m);
         });
+    }
+
+    /**
+     * 彻底删除一个会话：
+     * 1. evict 进程（如果还活着）
+     * 2. 删除 DB 主行
+     * 3. 删除三张审计表中所有该 sessionId 的行
+     * 4. 异步删除磁盘工作目录（/workspaces/{sessionId}/）与 ompSessionFile 指向的会话文件
+     *
+     * 仅适用于已归档的会话；调用方应先判断 status == "archived"。
+     *
+     * @return true 表示主行存在并删除；false 表示会话不存在
+     */
+    @Transactional
+    public boolean delete(String sessionId) {
+        Optional<SessionMeta> opt = repo.findBySessionId(sessionId);
+        if (opt.isEmpty()) return false;
+        SessionMeta m = opt.get();
+        if (!"archived".equals(m.getStatus())) {
+            throw new IllegalStateException("仅归档会话可删除，当前状态：" + m.getStatus());
+        }
+
+        // 1. 进程 evict（如果还活着则优雅关闭）
+        try { pool.evict(sessionId); } catch (Exception ignored) { /* 可能未拉起过 */ }
+
+        // 2. 审计清理（必须在主行删除前，因为 sessionId 是软引用；删除后仍可按 sessionId 匹配）
+        long p = promptAuditRepo.deleteBySessionId(sessionId);
+        long t = toolAuditRepo.deleteBySessionId(sessionId);
+        long r = responseAuditRepo.deleteBySessionId(sessionId);
+        log.info("[delete] session={} cleaned audits prompt={} tool={} response={}", sessionId, p, t, r);
+
+        // 3. DB 主行
+        repo.delete(m);
+        repo.flush();
+
+        // 4. 磁盘清理（事务外异步，失败不影响主流程）
+        // 工作目录是按 {userId}/{repoId} 共享的，多个 session 共用同一目录，
+        // 这里只清理 session 自身的 .omp 会话文件，不动工作目录。
+        final String ompSessionFile = m.getOmpSessionFile();
+        CompletableFuture.runAsync(() -> deleteOnDisk(ompSessionFile));
+        return true;
+    }
+
+    private void deleteOnDisk(String ompSessionFile) {
+        try {
+            if (ompSessionFile != null && !ompSessionFile.isBlank()) {
+                Path sf = Path.of(ompSessionFile);
+                if (Files.exists(sf)) {
+                    Files.deleteIfExists(sf);
+                    log.info("[delete] removed session file: {}", sf);
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[delete] disk cleanup failed: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 启动钩子：把所有 status=active 的会话统一标记为 archived。
+     * <p>由 {@link com.yourorg.omp.config.StartupWiring} 在 {@code ApplicationReadyEvent} 时调用。
+     * 此时 ProcessPool 是空的（容器/进程刚启动），不需要 evict。
+     * <p>用户下次访问会话时，可通过 {@link #unarchive} 或 {@link #resumeSession} 拉起新进程
+     * 并以 {@code --resume <sessionFile>} 恢复历史对话。
+     *
+     * @return 被归档的会话数
+     */
+    @Transactional
+    public int archiveAllOnStartup() {
+        List<SessionMeta> actives = repo.findByStatus("active");
+        if (actives.isEmpty()) return 0;
+        Instant now = Instant.now();
+        for (SessionMeta m : actives) {
+            m.setStatus("archived");
+            m.setLastActiveAt(now);
+        }
+        repo.saveAll(actives);
+        return actives.size();
     }
 
     /**

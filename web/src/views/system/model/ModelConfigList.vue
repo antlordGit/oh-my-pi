@@ -87,19 +87,19 @@ onMounted(load)
         <span style="width:180px">操作</span>
       </div>
       <div v-for="(c, idx) in configs" :key="c.id" class="table-row" :class="{ 'row-active': c.active }">
-        <span class="mono dim" style="width:40px">{{ String(idx + 1).padStart(2, '0') }}</span>
-        <span class="mono accent" style="width:140px" :title="c.configName">{{ c.configName }}</span>
-        <span style="width:120px" :title="c.displayName || ''">{{ c.displayName || '—' }}</span>
-        <span class="mono" style="width:100px">{{ c.provider }}</span>
-        <span class="mono dim" style="width:140px;font-size:11px" :title="c.modelId">{{ c.modelId }}</span>
-        <span style="width:160px">
+        <span class="mono dim" data-label="#" style="width:40px">{{ String(idx + 1).padStart(2, '0') }}</span>
+        <span class="mono accent" data-label="配置名称" style="width:140px" :title="c.configName">{{ c.configName }}</span>
+        <span data-label="显示名称" style="width:120px" :title="c.displayName || ''">{{ c.displayName || '—' }}</span>
+        <span class="mono" data-label="服务商" style="width:100px">{{ c.provider }}</span>
+        <span class="mono dim" data-label="模型名称" style="width:140px;font-size:11px" :title="c.modelId">{{ c.modelId }}</span>
+        <span data-label="状态" style="width:160px">
           <span class="tag" :class="c.active ? 'tag-success' : 'tag-mute'">
             <span class="status-dot" :style="{ background: c.active ? 'var(--good)' : 'var(--ink-mute)' }"></span>
             {{ c.active ? '已激活' : '未激活' }}
           </span>
         </span>
-        <span class="mono dim" style="width:120px;font-size:11px">{{ c.createdAt?.slice(0, 10) || '—' }}</span>
-        <span style="width:180px;display:inline-flex;gap:6px">
+        <span class="mono dim" data-label="创建时间" style="width:120px;font-size:11px">{{ c.createdAt?.slice(0, 10) || '—' }}</span>
+        <span class="row-actions" data-label="操作" style="width:180px">
           <button v-if="!c.active" v-permission="'omp:system:model:activate'" class="btn-mini" style="color:var(--good);border-color:var(--good-soft)" @click="handleActivate(c)">启用</button>
           <button v-permission="'omp:system:model:edit'" class="btn-mini" @click="handleEdit(c)">编辑</button>
           <button v-permission="'omp:system:model:delete'" class="btn-mini-danger" @click="handleDelete(c)">删除</button>
@@ -122,5 +122,62 @@ onMounted(load)
   border-radius: 50%;
   margin-right: 4px;
   vertical-align: middle;
+}
+
+/* row-actions 容器：桌面端横向、移动端纵向 */
+.row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+/* 移动端：每个属性前加"标签："伪元素，让垂直堆叠时不丢语义 */
+@media (max-width: 600px) {
+  .table-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  /* 覆盖子组件硬编码的 width */
+  .table-row > * {
+    width: 100% !important;
+    min-width: 0;
+  }
+  .row-actions {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .row-actions > button {
+    justify-content: center;
+    margin-left: 0 !important;
+  }
+  /* 每个 span 前加 data-label 灰色标签前缀 */
+  .table-row > [data-label]::before {
+    content: attr(data-label) "：";
+    display: inline-block;
+    width: 80px;
+    margin-right: 8px;
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+  /* 编号本身无意义标签，"#" → 隐藏 */
+  .table-row > [data-label="#"]::before { display: none; }
+  /* 状态/时间这种语义弱的可以更轻量 */
+  .table-row > [data-label="状态"]::before,
+  .table-row > [data-label="创建时间"]::before {
+    width: 80px;
+  }
+  /* 操作列：占满整行 */
+  .table-row > [data-label="操作"] {
+    margin-top: 6px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+  }
 }
 </style>

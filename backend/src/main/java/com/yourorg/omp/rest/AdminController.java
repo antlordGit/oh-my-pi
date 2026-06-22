@@ -16,7 +16,9 @@ import com.yourorg.omp.session.SessionManager;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.ArrayList;
 import java.time.Instant;
@@ -167,6 +169,23 @@ public class AdminController {
         // mask the kill. archive() does both in one transaction.
         sessionManager.archive(id);
         return Map.of("ok", true);
+    }
+
+    /**
+     * 彻底删除一个已归档会话：DB 行 + 三张审计表 + ompSessionFile 磁盘文件。
+     * 仅接受 status=archived 的会话；其他状态返回 400。
+     */
+    @PostMapping("/sessions/{id}/delete")
+    public Map<String, Object> deleteSession(@PathVariable String id) {
+        try {
+            boolean ok = sessionManager.delete(id);
+            if (!ok) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "会话不存在：" + id);
+            }
+            return Map.of("ok", true);
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 
     @PostMapping("/sessions/{id}/reload")

@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface ResponseAuditRepository extends JpaRepository<ResponseAudit, Long> {
+    long deleteBySessionId(String sessionId);
+
     @Query("""
             SELECT r FROM ResponseAudit r
             WHERE (:sessionId IS NULL OR r.sessionId = :sessionId)

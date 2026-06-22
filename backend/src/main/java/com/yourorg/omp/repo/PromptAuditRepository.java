@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 public interface PromptAuditRepository extends JpaRepository<PromptAudit, Long> {
+    long deleteBySessionId(String sessionId);
+
     @Query("""
             SELECT p FROM PromptAudit p
             WHERE (:sessionId IS NULL OR p.sessionId = :sessionId)

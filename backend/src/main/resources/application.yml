@@ -19,7 +19,7 @@ spring:
   # Redis（系统维护开关用，开发环境默认指向本机 6379）
   data:
     redis:
-      host: ${OMP_REDIS_HOST:172.17.0.1}
+      host: ${OMP_REDIS_HOST:127.0.0.1}
       port: ${OMP_REDIS_PORT:6379}
       password: ${OMP_REDIS_PASSWORD:9ww3AHVY*$@d276}
       database: ${OMP_REDIS_DATABASE:0}

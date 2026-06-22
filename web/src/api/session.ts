@@ -71,6 +71,15 @@ export async function unarchive(sessionId: string): Promise<void> {
   await api.post(`/api/sessions/${sessionId}/unarchive`)
 }
 
+/**
+ * 彻底删除一个已归档会话：DB 行 + 审计表 + 磁盘会话文件。
+ * 仅 admin 路径下使用，调用方应保证 sessionId 当前 status === 'archived'，
+ * 否则服务端会返回 400。
+ */
+export async function deleteArchivedSession(sessionId: string): Promise<void> {
+  await api.post(`/admin/sessions/${sessionId}/delete`)
+}
+
 export async function newSession(sessionId: string, parentSession?: string): Promise<any> {
   const r = await api.post(`/api/sessions/${sessionId}/new-session`, { parentSession })
   return r.data

@@ -100,47 +100,52 @@ onMounted(() => {
   <div class="system-root">
     <div class="page">
 
-      <!-- Hero stats -->
+      <!-- Hero stats — 控制台风格分格（替代圆环仪表盘） -->
       <section class="hero-stats-section fade-up" style="animation-delay:160ms">
         <div class="hero-stats">
-          <div class="stat-cell stat-users">
-            <div class="stat-ring">
-              <span class="big-num">{{ String(userCount).padStart(2, '0') }}</span>
-            </div>
-            <div class="stat-foot">
-              <span class="serial">用户</span>
-            </div>
-          </div>
-          <div class="stat-cell stat-tenants">
-            <div class="stat-ring">
-              <span class="big-num">{{ String(tenantCount).padStart(2, '0') }}</span>
-            </div>
-            <div class="stat-foot">
-              <span class="serial">租户</span>
+          <div class="stat-cell stat-users" tabindex="0">
+            <span class="stat-spark" aria-hidden="true"></span>
+            <span class="stat-bar" aria-hidden="true"></span>
+            <div class="stat-body">
+              <span class="stat-label">用户</span>
+              <span class="stat-num mono">{{ String(userCount).padStart(2, '0') }}</span>
+              <span class="stat-meta mono">USERS</span>
             </div>
           </div>
-          <div class="stat-cell stat-roles">
-            <div class="stat-ring">
-              <span class="big-num">{{ String(roleCount).padStart(2, '0') }}</span>
-            </div>
-            <div class="stat-foot">
-              <span class="serial">角色</span>
-            </div>
-          </div>
-          <div class="stat-cell stat-menus">
-            <div class="stat-ring">
-              <span class="big-num">{{ String(menuCount).padStart(2, '0') }}</span>
-            </div>
-            <div class="stat-foot">
-              <span class="serial">菜单</span>
+          <div class="stat-cell stat-tenants" tabindex="0">
+            <span class="stat-spark" aria-hidden="true"></span>
+            <span class="stat-bar" aria-hidden="true"></span>
+            <div class="stat-body">
+              <span class="stat-label">租户</span>
+              <span class="stat-num mono">{{ String(tenantCount).padStart(2, '0') }}</span>
+              <span class="stat-meta mono">TENANTS</span>
             </div>
           </div>
-          <div class="stat-cell stat-models">
-            <div class="stat-ring">
-              <span class="big-num">{{ String(modelCount).padStart(2, '0') }}</span>
+          <div class="stat-cell stat-roles" tabindex="0">
+            <span class="stat-spark" aria-hidden="true"></span>
+            <span class="stat-bar" aria-hidden="true"></span>
+            <div class="stat-body">
+              <span class="stat-label">角色</span>
+              <span class="stat-num mono">{{ String(roleCount).padStart(2, '0') }}</span>
+              <span class="stat-meta mono">ROLES</span>
             </div>
-            <div class="stat-foot">
-              <span class="serial">模型</span>
+          </div>
+          <div class="stat-cell stat-menus" tabindex="0">
+            <span class="stat-spark" aria-hidden="true"></span>
+            <span class="stat-bar" aria-hidden="true"></span>
+            <div class="stat-body">
+              <span class="stat-label">菜单</span>
+              <span class="stat-num mono">{{ String(menuCount).padStart(2, '0') }}</span>
+              <span class="stat-meta mono">MENUS</span>
+            </div>
+          </div>
+          <div class="stat-cell stat-models" tabindex="0">
+            <span class="stat-spark" aria-hidden="true"></span>
+            <span class="stat-bar" aria-hidden="true"></span>
+            <div class="stat-body">
+              <span class="stat-label">模型</span>
+              <span class="stat-num mono">{{ String(modelCount).padStart(2, '0') }}</span>
+              <span class="stat-meta mono">MODELS</span>
             </div>
           </div>
         </div>
@@ -218,45 +223,135 @@ onMounted(() => {
 .nav-user { display: inline-flex; align-items: center; }
 .nav-user .serial { color: var(--ink-2); }
 
-/* Hero stats */
+/* ====================================================================
+   Hero stats — 控制台分格（每张卡：左侧色条 + 数字 + 标签 + 顶角刻度线）
+   ==================================================================== */
 .hero-stats-section { padding: 12px 0 8px; position: relative; z-index: 1; }
 .hero-stats {
-  display: grid; grid-template-columns: repeat(5, 1fr);
-  gap: 1px; background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius); overflow: hidden;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
 }
+
+/* 卡片骨架 */
 .stat-cell {
-  display: flex; flex-direction: column; align-items: center;
-  gap: 14px; padding: 28px 16px 22px;
-  background: var(--surface); position: relative;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 132px;
+  padding: 18px 18px 18px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  cursor: default;
+  transition: transform 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out), border-color 0.22s var(--ease-out);
+  outline: none;
 }
-.stat-ring {
-  position: relative; display: inline-flex;
-  align-items: center; justify-content: center;
-  width: 88px; height: 88px; border-radius: 50%;
+.stat-cell:hover, .stat-cell:focus-visible {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -10px rgba(15, 23, 42, 0.18);
+  border-color: var(--ink-faint);
 }
-.stat-ring::before {
-  content: ''; position: absolute; inset: 0;
-  border-radius: 50%; border: 1.5px solid var(--border);
+.stat-cell:focus-visible { box-shadow: 0 0 0 2px var(--brand-soft-2); }
+
+/* 左侧 4px 色条 + hover 延伸 */
+.stat-bar {
+  position: absolute;
+  left: 0; top: 14px; bottom: 14px;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
+  background: currentColor;
+  transition: top 0.22s var(--ease-out), bottom 0.22s var(--ease-out);
 }
-.big-num {
-  font-family: var(--font-mono);
-  font-size: clamp(36px, 3.6vw, 48px);
-  font-weight: 700; letter-spacing: -0.04em;
-  color: var(--brand); line-height: 1;
-  position: relative; z-index: 1;
+.stat-cell:hover .stat-bar { top: 10px; bottom: 10px; }
+
+/* 顶部刻度线（拟"控制仪表"角标） */
+.stat-spark {
+  position: absolute;
+  top: 10px; right: 12px;
+  width: 28px; height: 10px;
+  background-image: linear-gradient(to right, currentColor 1px, transparent 1px);
+  background-size: 4px 6px;
+  background-repeat: repeat-x;
+  background-position: 0 center;
+  opacity: 0.35;
+}
+
+/* 内容 */
+.stat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: relative;
+  z-index: 1;
+}
+.stat-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-2);
+  letter-spacing: 0.02em;
+}
+.stat-num {
+  font-size: clamp(30px, 2.8vw, 38px);
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.05;
+  color: currentColor;
   font-variant-numeric: tabular-nums;
 }
-.stat-users .big-num  { color: var(--brand); }
-.stat-tenants .big-num  { color: #7C3AED; }
-.stat-roles .big-num    { color: #16A34A; }
-.stat-menus .big-num    { color: #EA580C; }
-.stat-models .big-num   { color: #0891B2; }
-.stat-foot {
-  display: flex; align-items: center; gap: 8px;
-  font-size: 11px; font-weight: 500; letter-spacing: 0.08em;
-  text-transform: uppercase; color: var(--ink-mute);
+.stat-meta {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--ink-faint);
+  margin-top: 4px;
+}
+
+/* 五色 —— 每张卡用 color 串联色条/数字/刻度，整张氛围统一 */
+.stat-users    { color: var(--brand); }
+.stat-tenants  { color: #7C3AED; }
+.stat-roles    { color: #16A34A; }
+.stat-menus    { color: #EA580C; }
+.stat-models   { color: #0891B2; }
+
+/* 给每张卡打一个非常浅的同色系 tint 背景 —— 用 attr() 不可行，改用预定义变量 + filter */
+.stat-users::before, .stat-tenants::before, .stat-roles::before, .stat-menus::before, .stat-models::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: currentColor;
+  opacity: 0.04;
+  pointer-events: none;
+  transition: opacity 0.22s var(--ease-out);
+}
+.stat-cell:hover::before { opacity: 0.08; }
+
+/* 数字下方加一道非常细的下划线，悬停时延伸，强化"按下"感 */
+.stat-num::after {
+  content: '';
+  display: block;
+  width: 32px;
+  height: 1.5px;
+  margin-top: 6px;
+  background: currentColor;
+  opacity: 0.45;
+  transition: width 0.22s var(--ease-out);
+}
+.stat-cell:hover .stat-num::after { width: 56px; }
+
+/* 移动端：5 列 → 2 列 */
+@media (max-width: 900px) {
+  .hero-stats { grid-template-columns: repeat(3, 1fr); }
+  .stat-cell { min-height: 110px; padding: 14px 14px 14px 18px; }
+}
+@media (max-width: 600px) {
+  .hero-stats { grid-template-columns: repeat(2, 1fr); }
+  .stat-cell { min-height: 100px; padding: 12px 12px 12px 16px; }
+  .stat-spark { display: none; }
+  .stat-num { font-size: 26px; }
+  .stat-num::after { width: 24px; margin-top: 4px; }
 }
 
 /* Tabs */
@@ -292,13 +387,24 @@ onMounted(() => {
   .page { padding: 0 16px 48px; }
   .topbar { flex-wrap: wrap; gap: 12px; }
   .nav-search { display: none; }
-  .hero-stats { grid-template-columns: repeat(3, 1fr); }
-  .stat-cell { padding: 20px 14px 18px; gap: 10px; }
-  .stat-ring { width: 72px; height: 72px; }
-  .big-num { font-size: 32px; }
 }
 @media (max-width: 600px) {
-  .hero-stats { grid-template-columns: repeat(2, 1fr); }
+  /* Tabs 在窄屏上横向滚动（与 SessionList 一致） */
+  .tabs {
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+            mask-image: linear-gradient(to right, transparent, #000 18px, #000 calc(100% - 18px), transparent);
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { padding: 10px 14px; font-size: 13px; white-space: nowrap; flex-shrink: 0; }
+}
+@media (max-width: 480px) {
+  .stat-num { font-size: 22px; }
+  .stat-meta { display: none; }
 }
 </style>
 
@@ -385,4 +491,73 @@ onMounted(() => {
 }
 .child-area .expand-btn:hover { color: var(--brand); }
 .child-area .tree-indent { flex-shrink: 0; }
+
+/* 表格行内通用按钮基础样式（child-area 作用域，scope-safe） */
+.child-area .btn-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+.child-area .btn-mini:hover:not(:disabled) {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+.child-area .btn-mini:disabled { opacity: 0.4; cursor: not-allowed; }
+.child-area .btn-mini + .btn-mini,
+.child-area .btn-mini + .btn-mini-danger { margin-left: 6px; }
+
+/* 移动端：表格塌成垂直堆叠卡片样式，table-head 隐藏 */
+@media (max-width: 600px) {
+  .child-area .table-head { display: none; }
+  .child-area .table-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 16px;
+  }
+  /* 覆盖子组件硬编码的 width 固定值；具体列布局由子组件自己的 scoped 媒体查询负责 */
+  .child-area .table-row > * {
+    width: 100% !important;
+    min-width: 0;
+  }
+  .child-area .table-row code,
+  .child-area .table-row .mono {
+    word-break: break-all;
+    white-space: normal;
+  }
+  /* row-actions 操作组：垂直堆叠（适用于所有子组件） */
+  .child-area .table-row .row-actions {
+    display: flex !important;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+  .child-area .table-row .row-actions > button {
+    margin-left: 0 !important;
+    justify-content: center;
+  }
+  /* 其他子组件可能仍用 inline style display:inline-flex 当操作容器 */
+  .child-area .table-row span[style*="display: inline-flex"] {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+  }
+  .child-area .table-row span[style*="display: inline-flex"] > button {
+    margin-left: 0 !important;
+    justify-content: center;
+  }
+}
+@media (max-width: 380px) {
+  .child-area .table-row { padding: 12px; gap: 6px; }
+}
 </style>

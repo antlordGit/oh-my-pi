@@ -738,6 +738,7 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 | `omp-workspaces` | `/data/docker/volumes/omp-workspaces/_data` | omp-app: `/data/omp/workspaces`、code-server: `/data/omp/workspaces` |
 | `omp-agent` | `/data/docker/volumes/omp-agent/_data` | omp-app: `/data/omp/agent` |
 | `omp-logs` | `/data/docker/volumes/omp-logs/_data` | omp-app: `/data/omp/logs` |
+| `omp-maven` | `/data/docker/volumes/omp-maven/_data` | omp-app: `/data/omp/maven-repository` |
 
 > ⚠️ **同卷同路径**：`omp-workspaces` 必须在两个容器内挂到**完全相同**的路径
 > `/data/omp/workspaces`。后端 IDE 按钮生成的 URL 是 `?folder=/data/omp/workspaces/<user>/<repo>`（绝对路径），
@@ -758,6 +759,7 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 │       └── omp-services-locations.conf  # 业务工程 location 片段（热加载）
 ├── omp-dev.sh                 # 容器内 omp 入口（被后端 spawn）
 ├── prod-application.yml       # 生产配置（DB / IDE / JWT）
+├── maven-settings.xml         # Maven 镜像（脱敏，路径替换为容器内路径，参考 §19.7）
 ├── jdk21/                     # JDK 21（打进镜像）
 ├── bun                        # bun 二进制（打进镜像）
 ├── omp-backend-0.1.0.jar      # 后端 fat-jar
@@ -784,6 +786,23 @@ ENV PATH=/usr/local/jdk21/bin:/usr/local/bin:$PATH
 # bun
 COPY bun /usr/local/bin/bun
 RUN chmod +x /usr/local/bin/bun
+
+# Maven 3.9.9 —— Java 后端容器内构建（tarball 安装，~15 MB；不走 apt 避免拖 openjdk 依赖）。
+# 版本与 DEPLOY.md §2.1 本地构建要求对齐（"Maven ≥ 3.9"）；apt 仓库的 3.6.3 不满足。
+ARG MAVEN_VERSION=3.9.9
+RUN curl -fsSL "https://gh-proxy.com/https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      -o /tmp/maven.tar.gz \
+    && tar -xzf /tmp/maven.tar.gz -C /usr/local/ \
+    && mv /usr/local/apache-maven-${MAVEN_VERSION} /usr/local/maven \
+    && rm /tmp/maven.tar.gz \
+    && /usr/local/maven/bin/mvn --version
+
+ENV MAVEN_HOME=/usr/local/maven
+ENV PATH=/usr/local/maven/bin:/usr/local/jdk21/bin:/usr/local/bin:$PATH
+
+# Maven 全局 settings（aliyun 镜像 + 本地仓库 /data/omp/maven-repository）。
+# 容器启动时由 entrypoint.sh cp 到 /root/.m2/settings.xml。
+COPY maven-settings.xml /etc/omp/maven-settings.xml
 
 # RTK (Rust Token Killer) —— 压缩 LLM agent 调 shell 时的输出，60-90% token 节省。
 # 装 musl 静态二进制（不挑 libc，无运行时依赖）。固定版本以保证可复现，
@@ -813,6 +832,7 @@ RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.
 #   - uv             +~30 MB（astral-sh 静态二进制）
 #   - Go 1.23        +~700 MB（官方 tarball）
 #   - Rust stable    +~1.2 GB（rustup 含 cargo + rustc）
+#   - Maven 3.9.9    +~15 MB（官方 tarball，dev-only）
 # 合计：镜像增加约 2.2 GB。生产实例不需要这些，dev-only。
 # ============================================================================
 ARG GO_VERSION=1.23.4
@@ -895,7 +915,13 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
 ```bash
 #!/bin/bash
 set -e
-mkdir -p /data/omp/workspaces /data/omp/agent /data/omp/logs
+mkdir -p /data/omp/workspaces /data/omp/agent /data/omp/logs /data/omp/maven-repository
+
+# 部署 Maven 全局 settings.xml（镜像内路径已脱敏，localRepository 指向持久化卷）
+mkdir -p /root/.m2
+cp /etc/omp/maven-settings.xml /root/.m2/settings.xml
+echo "[entrypoint] Maven $(/usr/local/maven/bin/mvn --version 2>&1 | head -1)"
+
 echo "[entrypoint] 启动 nginx..."
 nginx
 echo "[entrypoint] 启动后端 java..."
@@ -1038,6 +1064,7 @@ http {
 docker volume create omp-workspaces
 docker volume create omp-agent
 docker volume create omp-logs
+docker volume create omp-maven
 
 # 2) 构建镜像
 cd /home/omp/docker-build
@@ -1049,6 +1076,7 @@ docker run -d --restart unless-stopped --name omp-app \
   -v omp-workspaces:/data/omp/workspaces \
   -v omp-agent:/data/omp/agent \
   -v omp-logs:/data/omp/logs \
+  -v omp-maven:/data/omp/maven-repository \
   omp-allinone:latest
 ```
 
@@ -1096,6 +1124,7 @@ docker run -d --restart unless-stopped --name code-server \
 | 改动 | 操作 |
 |---|---|
 | Java 代码（`backend/src/`） | 本地 `mvn package` → rsync jar → 重建 omp-allinone 镜像 → 重启 omp-app |
+| Java 代码（`backend/src/`，**容器内调试**） | 容器内 `cd /app/backend && mvn -DskipTests package` → `docker cp` 出来替换 → 重启 omp-app |
 | Vue 代码（`web/src/`） | 本地 `bun run build` → rsync dist → 重建 omp-allinone 镜像 → 重启 omp-app |
 | 配置 `prod-application.yml` | scp 到 `/home/omp/docker-build/` → 重建镜像 → 重启 omp-app |
 | omp 源码 / omp-dev.sh | rsync omp 目录 → 重建镜像 → 重启 omp-app |
@@ -1125,6 +1154,7 @@ ssh $SERVER 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . 
     -v omp-workspaces:/data/omp/workspaces \
     -v omp-agent:/data/omp/agent \
     -v omp-logs:/data/omp/logs \
+    -v omp-maven:/data/omp/maven-repository \
     omp-allinone:latest && \
   sleep 10 && docker logs omp-app | tail -3'
 ```
@@ -1137,6 +1167,9 @@ cd /Users/chenzhiwei/work/github/oh-my-pi-main/web && bun run build
 rsync -az --delete dist/ root@10.126.2.120:/home/omp/docker-build/dist/
 ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && docker restart omp-app'
 ```
+
+> ⚠️ **加 Maven 卷后必须走 §19.2 重建容器**，`docker restart` 不会应用新卷挂载，
+> 老容器仍然看不到 `/data/omp/maven-repository` 卷。
 
 ### 19.4 仅改 prod 配置
 
@@ -1179,6 +1212,21 @@ ssh $SERVER 'docker pull codercom/code-server:latest && \
     -v /home/omp/app/ide/config:/root/.config \
     codercom/code-server:latest --auth none --port 8080'
 
+# 容器内 Maven 版本自检
+ssh $SERVER 'docker exec omp-app /usr/local/maven/bin/mvn --version'
+
+# 容器内打后端 jar（源码已 COPY 进 /app/backend）
+ssh $SERVER 'docker exec -it -w /app/backend omp-app /usr/local/maven/bin/mvn -DskipTests package'
+
+# 拷新 jar 出来替换 docker-build 里的旧 jar
+ssh $SERVER 'docker cp omp-app:/app/backend/target/omp-backend-0.1.0.jar /home/omp/docker-build/omp-backend-0.1.0.jar && docker restart omp-app'
+
+# 看 maven 本地仓库大小（首次冷启 ~0；下完依赖后约 300–500 MB）
+ssh $SERVER 'docker exec omp-app du -sh /data/omp/maven-repository'
+
+# 清理 maven 本地仓库（强制重新下载）
+ssh $SERVER 'docker exec omp-app rm -rf /data/omp/maven-repository/*'
+
 # 备份 workspaces 卷
 ssh $SERVER 'docker run --rm -v omp-workspaces:/data -v /home/omp/backup:/backup \
   ubuntu tar -czf /backup/workspaces-$(date +%Y%m%d).tar.gz -C /data .'
@@ -1186,4 +1234,103 @@ ssh $SERVER 'docker run --rm -v omp-workspaces:/data -v /home/omp/backup:/backup
 # 备份 code-server 数据（扩展、设置）
 ssh $SERVER 'tar -czf /home/omp/backup/code-server-data-$(date +%Y%m%d).tar.gz /home/omp/app/ide/'
 ```
+
+### 19.6 容器内 Maven 自检流程
+
+镜像带 Maven 3.9.9 + JDK 21（来自 `/usr/local/jdk21`）后，可走容器内自检：
+
+```bash
+ssh root@10.126.2.120
+
+# 1) Maven 版本（应输出 Apache Maven 3.9.9 + Java version: 21.x）
+docker exec omp-app /usr/local/maven/bin/mvn --version
+
+# 2) settings.xml 已部署到 /root/.m2/（localRepository 指向持久化卷）
+docker exec omp-app cat /root/.m2/settings.xml | grep -E "localRepository|mirror"
+
+# 3) 卷挂载生效（首启空目录；跑过 mvn 后会有依赖目录）
+docker exec omp-app ls -la /data/omp/maven-repository
+
+# 4) 端到端构建测试（需先把 backend 源码 COPY 进镜像或挂到 /app/backend）
+docker exec -it -w /app/backend omp-app /usr/local/maven/bin/mvn -DskipTests package
+
+# 5) 看仓库大小（下完 Spring 全家桶后约 300–500 MB）
+docker exec omp-app du -sh /data/omp/maven-repository
+```
+
+### 19.7 服务器端 `maven-settings.xml` 模板
+
+放在 `/home/omp/docker-build/maven-settings.xml`，被 Dockerfile `COPY` 进镜像
+`/etc/omp/maven-settings.xml`，entrypoint.sh 启动时再 cp 到 `/root/.m2/settings.xml`。
+
+与本机 `~/.m2/settings.xml` 的差异：本地仓库路径替换为容器内路径，
+其余（aliyun 镜像、spring milestones、verapdf 仓库）保留以便内外一致。
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">
+
+  <!-- 本地仓库路径：容器内持久化卷挂载点 -->
+  <localRepository>/data/omp/maven-repository</localRepository>
+
+  <pluginGroups>
+  </pluginGroups>
+
+  <proxies>
+  </proxies>
+
+  <!-- 已清空所有账号密码（镜像为公共制品，无凭据） -->
+  <servers>
+  </servers>
+
+  <!-- 阿里云镜像（下载速度飞快） -->
+  <mirrors>
+    <mirror>
+      <id>aliyunmaven</id>
+      <mirrorOf>external:*,!verapdf-release</mirrorOf>
+      <name>阿里云公共仓库</name>
+      <url>https://maven.aliyun.com/repository/public</url>
+    </mirror>
+  </mirrors>
+
+  <profiles>
+    <!-- Spring 里程碑仓库 -->
+    <profile>
+      <id>spring</id>
+      <repositories>
+        <repository>
+          <id>spring-milestones</id>
+          <name>Spring Milestones</name>
+          <url>https://repo.spring.io/milestone</url>
+        </repository>
+      </repositories>
+    </profile>
+    <!-- veraPDF 仓库（aliyun 镜像未覆盖，按原仓直连） -->
+    <profile>
+      <id>verapdf-repo</id>
+      <repositories>
+        <repository>
+          <id>verapdf-release</id>
+          <name>veraPDF Release</name>
+          <url>https://artifactory.openpreservation.org/artifactory/verapdf-release</url>
+        </repository>
+      </repositories>
+    </profile>
+  </profiles>
+
+  <activeProfiles>
+    <activeProfile>spring</activeProfile>
+    <activeProfile>verapdf-repo</activeProfile>
+  </activeProfiles>
+</settings>
+```
+
+> **修改后部署**：本模板更新后无需重建镜像——直接 `docker cp` 进运行中容器即可：
+> ```bash
+> ssh root@10.126.2.120 'docker cp /home/omp/docker-build/maven-settings.xml \
+>   omp-app:/etc/omp/maven-settings.xml && \
+>   docker exec omp-app cp /etc/omp/maven-settings.xml /root/.m2/settings.xml'
+> ```
 
