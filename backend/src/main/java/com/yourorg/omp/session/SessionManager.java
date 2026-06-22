@@ -202,6 +202,56 @@ public class SessionManager {
         });
     }
 
+    /**
+     * 强制 evict 所有存活的 omp 进程。下次发消息时会以 {@code --resume <sessionFile>} 重启，
+     * 历史靠 session 文件恢复；进程重启意味着重新读取 models.yml，加载最新的 apiKey/baseUrl。
+     *
+     * <p>用途：跨 provider 切换激活模型时——OMP 的 ModelRegistry 在启动时一次性加载并固化 apiKey
+     * 到 AuthStorage#configOverrides，运行中改 models.yml 不会重读。所以新 provider 的 key 必须
+     * 通过进程重启才能生效。
+     */
+    public void evictAll() {
+        List<String> sessionIds = pool.activeSessionIds();
+        log.info("[evict-all] evicting {} live omp processes", sessionIds.size());
+        for (String sid : sessionIds) {
+            pool.evict(sid);
+        }
+    }
+
+    /**
+     * 把激活的模型动态广播给所有正在运行的 omp 进程，复刻 CLI 的 {@code /model} 行为：
+     * 进程不重启、对话历史不丢，下一次提问即用新模型。
+     *
+     * <p>对每个存活会话发送 {@code set_model} RPC。若进程的模型注册表里没有该模型
+     * （多见于进程启动后才新建、从未写入 models.yml 的模型，返回 {@code Model not found}），
+     * 则兜底 evict 该进程——下次发消息时会以 {@code --resume} 重启并加载新模型，历史靠 session 文件恢复。
+     *
+     * <p>全程异步、best-effort：单个会话失败只记日志，不影响其他会话，也不阻塞激活流程。
+     */
+    public void broadcastSetModel(String provider, String modelId) {
+        if (provider == null || provider.isBlank() || modelId == null || modelId.isBlank()) {
+            log.warn("[broadcast-set-model] skipped: provider/modelId blank (provider={}, modelId={})", provider, modelId);
+            return;
+        }
+        List<String> sessionIds = pool.activeSessionIds();
+        log.info("[broadcast-set-model] provider={} modelId={} targets={}", provider, modelId, sessionIds.size());
+        for (String sessionId : sessionIds) {
+            SessionMeta meta = repo.findBySessionId(sessionId).orElse(null);
+            if (meta == null) continue;
+            sendCommand(meta, RpcCommands.setModel(provider, modelId))
+                    .whenComplete((resp, err) -> {
+                        if (err != null) {
+                            // set_model 失败（多为模型未在注册表）：evict 让下次重启加载新模型
+                            log.warn("[broadcast-set-model] session={} set_model failed, evicting for restart: {}",
+                                    sessionId, err.getMessage());
+                            pool.evict(sessionId);
+                        } else {
+                            log.info("[broadcast-set-model] session={} switched to {}/{}", sessionId, provider, modelId);
+                        }
+                    });
+        }
+    }
+
     private JsonNode unwrapResponse(JsonNode response) {
         if (!response.path("success").asBoolean(true)) {
             String err = response.path("error").asText("unknown error");

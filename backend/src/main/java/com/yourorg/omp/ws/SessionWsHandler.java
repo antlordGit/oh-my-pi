@@ -42,6 +42,7 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
     private final ProcessPool pool;
     private final EventBus eventBus;
     private final CurrentUser currentUser;
+    private final com.yourorg.omp.maintenance.MaintenanceService maintenance;
 
     @Value("${app.omp.security.jwt-secret:local-dev-secret-please-change-32chars-or-more-yes}")
     private String jwtSecret;
@@ -50,11 +51,14 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
 
     private record Subs(Disposable eventSub) {}
 
-    public SessionWsHandler(SessionManager sessions, ProcessPool pool, EventBus eventBus, CurrentUser currentUser) {
+    public SessionWsHandler(SessionManager sessions, ProcessPool pool, EventBus eventBus,
+                            CurrentUser currentUser,
+                            com.yourorg.omp.maintenance.MaintenanceService maintenance) {
         this.sessions = sessions;
         this.pool = pool;
         this.eventBus = eventBus;
         this.currentUser = currentUser;
+        this.maintenance = maintenance;
     }
 
     @Override
@@ -64,6 +68,16 @@ public class SessionWsHandler extends AbstractWebSocketHandler {
         if (token == null || token.isBlank() || !authenticateToken(token)) {
             log.warn("[ws] session={} missing or invalid token, closing", sessionId);
             socket.close(CloseStatus.NOT_ACCEPTABLE);
+            return;
+        }
+        // 维护模式下拒绝新的 WS 连接（已有连接不受影响）
+        if (maintenance.isEnabled()) {
+            log.warn("[ws] session={} rejected — system in maintenance mode", sessionId);
+            try {
+                socket.sendMessage(new TextMessage(
+                        "{\"type\":\"maintenance\",\"message\":\"系统维护中，暂不接受新连接\"}"));
+            } catch (Exception ignore) {}
+            socket.close(CloseStatus.SERVICE_RESTARTED);
             return;
         }
         var meta = sessions.findScoped(sessionId, currentUser.scope())

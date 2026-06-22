@@ -20,6 +20,14 @@ api.interceptors.response.use(
       localStorage.removeItem(TOKEN_KEY)
       window.location.href = '/login'
     }
+    // 统一规范化错误数据：把后端可能用的 message/msg/error 字段统一搬到 data.error，
+    // 这样所有调用方 `e.response.data.error || '...失败'` 都能拿到正确文案。
+    // 兼容：维护拦截器、Spring 默认错误格式、业务异常。
+    const data = err.response?.data
+    if (data && typeof data === 'object' && !data.error) {
+      const fallback = data.message || data.msg || data.errorMessage
+      if (fallback) data.error = fallback
+    }
     return Promise.reject(err)
   },
 )

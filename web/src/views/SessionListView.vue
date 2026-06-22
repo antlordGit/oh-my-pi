@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, ref, computed, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog } from 'naive-ui'
@@ -14,7 +14,10 @@ const dialog = useDialog()
 const sessions = ref<SessionSummary[]>([])
 const repos = ref<Repo[]>([])
 const loading = ref(false)
-const filter = ref<'all' | 'active' | 'archived'>('all')
+// 单 toggle：true 时隐藏归档会话（默认 false，显示全部）
+const hideArchived = ref(false)
+// 当前选中的仓库 Tab：'all' 表示全部；否则为具体 repoId
+const activeRepoTab = ref<string>('all')
 
 const newRepoId = ref('')
 const newRepoName = ref('')
@@ -96,9 +99,62 @@ const copyTargetRepoId = ref('')
 const copyDisplayName = ref('')
 const showCopyModal = ref(false)
 
-const filteredSessions = computed(() =>
-  filter.value === 'all' ? sessions.value : sessions.value.filter(s => s.status === filter.value),
+const filteredSessions = computed(() => {
+  let list = sessions.value
+  if (hideArchived.value) list = list.filter(s => s.status !== 'archived')
+  if (activeRepoTab.value !== 'all') list = list.filter(s => s.repoId === activeRepoTab.value)
+  return list
+})
+
+// 各 repo 在当前过滤条件下的会话数（用于 Tab 上角标）
+const repoCounts = computed<Record<string, number>>(() => {
+  const base = hideArchived.value
+    ? sessions.value.filter(s => s.status !== 'archived')
+    : sessions.value
+  const out: Record<string, number> = {}
+  for (const s of base) out[s.repoId] = (out[s.repoId] || 0) + 1
+  return out
+})
+
+// 用于 Tab 展示的仓库列表：仅显示有会话的仓库
+const visibleRepos = computed<Repo[]>(() => {
+  return repos.value.filter(r => (repoCounts.value[r.repoId] || 0) > 0)
+})
+
+// "全部" Tab 角标：在当前 filter 下的总会话数
+const totalFilteredCount = computed(() =>
+  Object.values(repoCounts.value).reduce((s, n) => s + n, 0),
 )
+
+// 当前选中的 repo tab 不在可见集合中时，自动回退到 "all"
+watch(visibleRepos, (list) => {
+  if (activeRepoTab.value !== 'all' && !list.some(r => r.repoId === activeRepoTab.value)) {
+    activeRepoTab.value = 'all'
+  }
+}, { immediate: true })
+
+// Tab 切换 / 数据变化时，把激活的 Tab 自动滚动到视口中央，避免在尾部仓库时看不到
+const repoTabsEl = ref<HTMLElement | null>(null)
+watch(activeRepoTab, async () => {
+  await nextTick()
+  const container = repoTabsEl.value
+  if (!container) return
+  const target = container.querySelector<HTMLElement>('.repo-tab.on')
+  if (!target) return
+  const offset = target.offsetLeft - (container.clientWidth - target.clientWidth) / 2
+  container.scrollTo({ left: Math.max(0, offset), behavior: 'smooth' })
+})
+
+// 让鼠标滚轮在 Tab 条上时映射为横向滚动（无触控板用户也能用）
+function onRepoTabsWheel(e: WheelEvent) {
+  const el = repoTabsEl.value
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  // 仅在纯垂直滚动时拦截，避免触控板自然横滚被反向
+  if (e.deltaY !== 0 && Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+    e.preventDefault()
+    el.scrollLeft += e.deltaY
+  }
+}
 
 const activeCount = computed(() => sessions.value.filter(s => effectiveStatus(s) === 'active').length)
 const archivedCount = computed(() => sessions.value.filter(s => effectiveStatus(s) === 'archived').length)
@@ -245,64 +301,74 @@ onMounted(refresh)
 <template>
   <div class="page">
     <!-- Hero stats — terminal instrumentation -->
-    <section class="hero-stats-section fade-up" style="animation-delay:160ms">
-      <div class="hero-stats">
-        <div class="stat-cell stat-active">
-          <div class="stat-ring">
-            <span class="stat-glow active"></span>
-            <span class="big-num">{{ String(activeCount).padStart(2, '0') }}</span>
-          </div>
-          <div class="stat-foot">
-            <span class="stat-dot live"></span>
-            <span class="serial">活跃</span>
-          </div>
-        </div>
-        <div class="stat-cell stat-archived">
-          <div class="stat-ring">
-            <span class="stat-glow archived"></span>
-            <span class="big-num">{{ String(archivedCount).padStart(2, '0') }}</span>
-          </div>
-          <div class="stat-foot">
-            <span class="stat-dot frozen"></span>
-            <span class="serial">归档</span>
-          </div>
-        </div>
-        <div class="stat-cell stat-repos">
-          <div class="stat-ring">
-            <span class="big-num">{{ String(repos.length).padStart(2, '0') }}</span>
-          </div>
-          <div class="stat-foot">
-            <span class="serial">仓库</span>
-          </div>
-        </div>
-        <div class="stat-cell stat-total">
-          <div class="stat-ring">
-            <span class="big-num">{{ String(totalSessions).padStart(2, '0') }}</span>
-          </div>
-          <div class="stat-foot">
-            <span class="serial">总数</span>
-          </div>
-        </div>
+    <!-- Meta strip — terminal instrumentation -->
+    <div class="meta-strip fade-up" style="animation-delay:160ms">
+      <div class="meta-cell">
+        <span class="meta-key">repos</span>
+        <span class="meta-val mono">{{ repos.length.toString().padStart(2, '0') }}</span>
       </div>
-    </section>
-
-    <!-- Filter strip -->
-    <div class="filter-strip fade-up" style="animation-delay:280ms">
+      <span class="meta-sep">·</span>
+      <div class="meta-cell">
+        <span class="meta-key">sessions</span>
+        <span class="meta-val mono">{{ totalSessions.toString().padStart(2, '0') }}</span>
+      </div>
+      <span class="meta-sep">·</span>
+      <div class="meta-cell">
+        <span class="meta-key">live</span>
+        <span class="meta-val mono" :class="{ ok: activeCount > 0 }">{{ activeCount.toString().padStart(2, '0') }}</span>
+      </div>
+      <span class="meta-sep">·</span>
+      <div class="meta-cell">
+        <span class="meta-key">archived</span>
+        <span class="meta-val mono" :class="{ ok: archivedCount > 0 }">{{ archivedCount.toString().padStart(2, '0') }}</span>
+      </div>
+      <span class="meta-spacer"></span>
       <button
-        v-for="f in ['all', 'active', 'archived'] as const"
-        :key="f"
-        class="filter-pill"
-        :class="{ on: filter === f }"
-        @click="filter = f"
+        class="archive-toggle"
+        :class="{ on: hideArchived }"
+        @click="hideArchived = !hideArchived"
+        :aria-pressed="hideArchived"
       >
-        <span class="filter-dot" :class="f"></span>
-        <span>{{ f === 'all' ? '全部' : f === 'active' ? '活跃' : '归档' }}</span>
-        <span class="filter-count">{{ f === 'all' ? totalSessions : f === 'active' ? activeCount : archivedCount }}</span>
+        <span class="archive-toggle-dot"></span>
+        <span>仅看活跃</span>
       </button>
+    </div>
+
+    <!-- Filter strip — 仅保留新建入口，过滤已下放到 meta-strip 与 repo-tabs -->
+    <div class="filter-strip fade-up" style="animation-delay:280ms">
+      <span class="serial">{{ filteredSessions.length }} 项 · 当前：{{ activeRepoTab === 'all' ? '全部仓库' : (visibleRepos.find(r => r.repoId === activeRepoTab)?.displayName || activeRepoTab) }}</span>
       <span class="dotline-fill"></span>
-      <span class="serial">{{ filteredSessions.length }} 项</span>
       <button class="btn-primary" @click="showCreator = !showCreator">
         {{ showCreator ? '收起' : '新建会话' }}
+      </button>
+    </div>
+
+    <!-- Repo Tabs -->
+    <div
+      v-if="visibleRepos.length > 0"
+      ref="repoTabsEl"
+      class="repo-tabs fade-up"
+      style="animation-delay:320ms"
+      @wheel="onRepoTabsWheel"
+    >
+      <button
+        class="repo-tab"
+        :class="{ on: activeRepoTab === 'all' }"
+        @click="activeRepoTab = 'all'"
+      >
+        <span class="repo-tab-name">全部仓库</span>
+        <span class="repo-tab-count mono">{{ totalFilteredCount }}</span>
+      </button>
+      <button
+        v-for="r in visibleRepos"
+        :key="r.repoId"
+        class="repo-tab"
+        :class="{ on: activeRepoTab === r.repoId }"
+        :title="r.displayName + ' · ' + r.repoId"
+        @click="activeRepoTab = r.repoId"
+      >
+        <span class="repo-tab-name">{{ r.displayName || r.repoId }}</span>
+        <span class="repo-tab-count mono">{{ repoCounts[r.repoId] || 0 }}</span>
       </button>
     </div>
 
@@ -425,8 +491,14 @@ onMounted(refresh)
     <section class="ledger fade-up" style="animation-delay:340ms">
       <div v-if="!filteredSessions.length" class="empty card">
         <span class="empty-icon">—</span>
-        <p class="empty-text">暂无会话</p>
-        <span class="serial">点击右上「新建会话」开始第一次编码</span>
+        <p class="empty-text">
+          {{ activeRepoTab !== 'all'
+              ? '该仓库下没有匹配会话'
+              : (hideArchived ? '没有活跃会话' : '暂无会话') }}
+        </p>
+        <span class="serial">
+          {{ sessions.length === 0 ? '点击右上「新建会话」开始第一次编码' : '调整过滤条件试试' }}
+        </span>
       </div>
 
       <div v-else class="entries">
@@ -486,138 +558,85 @@ onMounted(refresh)
 /* ====================================================================
    Hero stats — instrumentation panel
    ==================================================================== */
-.hero-stats-section {
-  padding: 24px 0 8px;
-  position: relative;
-  z-index: 1;
-}
-
-.hero-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.stat-cell {
+/* ====================================================================
+   Meta strip — 压缩版状态指示器
+   ==================================================================== */
+.meta-strip {
   display: flex;
-  flex-direction: column;
   align-items: center;
   gap: 14px;
-  padding: 28px 16px 22px;
-  background: var(--surface);
-  position: relative;
+  padding: 14px 18px;
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
+.meta-cell {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--ink-mute);
+}
+.meta-key { font-weight: 500; }
+.meta-val {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.meta-val.ok { color: #16A34A; }
+.meta-sep { color: var(--ink-faint); }
+.meta-spacer { flex: 1; }
 
-.stat-ring {
-  position: relative;
+.archive-toggle {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 88px;
-  height: 88px;
-  border-radius: 50%;
+  gap: 6px;
+  padding: 4px 10px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--ink-2);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
 }
-
-/* subtle outer ring */
-.stat-ring::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  border: 1.5px solid var(--border);
-}
-
-.stat-glow {
-  position: absolute;
-  inset: -6px;
-  border-radius: 50%;
-  z-index: -1;
-  opacity: 0;
-}
-
-.stat-glow.active {
-  background: radial-gradient(circle, rgba(34, 197, 94, 0.18) 0%, transparent 70%);
-  animation: stat-pulse 3.5s var(--ease-out) infinite;
-}
-
-.stat-glow.archived {
-  background: radial-gradient(circle, rgba(134, 144, 156, 0.12) 0%, transparent 70%);
-}
-
-@keyframes stat-pulse {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-.stat-cell .big-num {
-  font-family: var(--font-mono);
-  font-size: clamp(36px, 3.6vw, 48px);
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  line-height: 1;
-  position: relative;
-  z-index: 1;
-  font-variant-numeric: tabular-nums;
+.archive-toggle:hover {
+  border-color: var(--brand);
   color: var(--brand);
 }
-
-/* Active — green */
-.stat-active .big-num {
-  color: #16A34A;
+.archive-toggle.on {
+  background: var(--brand);
+  color: var(--ink-invert);
+  border-color: var(--brand);
 }
-
-/* Archived — muted slate */
-.stat-archived .big-num {
-  color: var(--ink-mute);
-}
-
-.stat-foot {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink-mute);
-}
-
-.stat-dot {
-  width: 5px;
-  height: 5px;
+.archive-toggle-dot {
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
+  background: var(--ink-faint);
+  transition: all var(--dur-fast) var(--ease-out);
 }
-
-.stat-dot.live {
-  background: #16A34A;
-  box-shadow: 0 0 6px rgba(22, 163, 74, 0.35);
-  animation: stat-pulse 3.5s var(--ease-out) infinite;
+.archive-toggle.on .archive-toggle-dot {
+  background: var(--ink-invert);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.5);
 }
-
-.stat-dot.frozen { background: var(--ink-mute); }
 
 /* ====================================================================
    Mobile collapse
    ==================================================================== */
 @media (max-width: 900px) {
-  .hero-stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .stat-cell {
-    padding: 20px 14px 18px;
+  .meta-strip {
+    flex-wrap: wrap;
     gap: 10px;
   }
-  .stat-ring {
-    width: 72px;
-    height: 72px;
-  }
-  .stat-cell .big-num {
-    font-size: 32px;
-  }
+  .meta-spacer { flex-basis: 100%; height: 0; }
 }
 
 /* ====================================================================
@@ -629,36 +648,79 @@ onMounted(refresh)
   gap: 10px;
   flex-wrap: wrap;
 }
-.filter-pill {
+
+/* ====================================================================
+   Repo Tabs — 按仓库切换会话
+   ==================================================================== */
+.repo-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* 边缘渐隐：提示左右两侧还有更多 Tab */
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+          mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+  /* 流畅滚动 */
+  scroll-behavior: smooth;
+  scrollbar-width: none;          /* Firefox */
+  -ms-overflow-style: none;       /* IE / 旧 Edge */
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0;
+  padding-left: 4px;
+  padding-right: 4px;
+  margin-bottom: 4px;
+}
+.repo-tabs::-webkit-scrollbar { display: none; } /* WebKit */
+.repo-tab { flex-shrink: 0; }     /* 禁止 Tab 被挤压变形 */
+.repo-tab {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-pill);
+  padding: 10px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
   color: var(--ink-2);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: all var(--dur-fast) var(--ease-out);
+  transition: color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+  border-radius: 0;
+  white-space: nowrap;
+  max-width: 240px;
 }
-.filter-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ink-mute); }
-.filter-dot.all { background: var(--brand); }
-.filter-dot.active { background: var(--good); }
-.filter-dot.archived { background: var(--ink-faint); }
-.filter-count {
-  padding: 0 8px;
+.repo-tab-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.repo-tab:hover {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+.repo-tab.on {
+  color: var(--brand);
+  border-bottom-color: var(--brand);
+  background: var(--brand-soft);
+}
+.repo-tab-count {
+  min-width: 20px;
+  padding: 0 6px;
   border-radius: var(--radius-pill);
   background: var(--surface-soft);
   color: var(--ink-mute);
   font-size: 11px;
-  min-width: 22px;
+  line-height: 18px;
   text-align: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.filter-pill:hover { border-color: var(--brand); color: var(--brand); }
-.filter-pill.on { background: var(--brand); color: var(--ink-invert); border-color: var(--brand); }
-.filter-pill.on .filter-count { background: rgba(255,255,255,0.18); color: var(--ink-invert); }
+.repo-tab.on .repo-tab-count {
+  background: var(--brand);
+  color: var(--ink-invert);
+}
 
 /* ====================================================================
    Creator
@@ -932,7 +994,6 @@ onMounted(refresh)
    ==================================================================== */
 @media (max-width: 900px) {
   .page { padding: 16px 16px 48px; }
-  .hero-stats-section { padding: 16px 0 8px; }
   .creator-grid { grid-template-columns: 1fr; }
   .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }
   .entry { grid-template-columns: 1fr; padding: 16px 18px; }
@@ -945,15 +1006,13 @@ onMounted(refresh)
 @media (max-width: 768px) {
   .page { padding: 12px 12px 64px; gap: 16px; }
 
+  /* --- meta strip --- */
+  .meta-strip { padding: 10px 12px; gap: 8px; font-size: 10px; }
+  .meta-val { font-size: 12px; }
+  .archive-toggle { font-size: 10px; padding: 3px 8px; }
+
   /* --- filter strip --- */
   .filter-strip { gap: 8px; }
-  .filter-pill {
-    flex: 1 1 auto;
-    min-width: 0;
-    justify-content: center;
-    font-size: 11px;
-    padding: 6px 10px;
-  }
   .filter-strip .btn-primary {
     width: 100%;
     justify-content: center;
@@ -1019,11 +1078,10 @@ onMounted(refresh)
    Mobile — max-width 480px (small phones)
    ==================================================================== */
 @media (max-width: 480px) {
-  .stat-cell { padding: 14px 8px 12px; gap: 6px; }
-  .stat-ring { width: 56px; height: 56px; }
-  .stat-ring::before { border-width: 1px; }
-  .stat-cell .big-num { font-size: 26px; }
-  .stat-foot { font-size: 10px; gap: 4px; }
+  .meta-strip { font-size: 9px; padding: 8px 10px; gap: 6px; }
+  .meta-cell { gap: 4px; }
+  .meta-val { font-size: 11px; }
+  .archive-toggle { font-size: 9px; padding: 3px 6px; }
   .entry-title { font-size: 15px; }
   .entry-meta { gap: 6px; font-size: 11px; }
 }

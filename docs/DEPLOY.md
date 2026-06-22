@@ -701,3 +701,489 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 | 前端返回 index.html 但 API 也返回 index.html | nginx `location /` 的 try_files 覆盖了 API 路由 | 把 `location /api/` 和 `location /ws/` 放 `location /` 前面 |
 | omp 崩溃 `Cannot find module pi_natives` | 用的还是 macOS .node | 确认 `pi_natives.linux-x64-baseline.node` 已覆盖 |
 | bun 命令找不到 | PATH 没有 `/usr/local/bin` | `export PATH="/usr/local/bin:$PATH"` 写入 `~/.bashrc` |
+
+---
+
+## 18. 部署记录 — 10.126.2.120 UAT 服务器
+
+> 本节记录 10.126.2.120 上的真实部署状态。所有路径 / 端口 / 卷名都与服务器
+> 一致；改服务器配置时同步更新本节。
+
+### 18.1 部署概览
+
+| 项 | 值 |
+|---|---|
+| 服务器 | 10.126.2.120, TencentOS 3.3, 61G 内存, x86_64 |
+| Java | OpenJDK 21.0.9（打进 all-in-one 镜像） |
+| bun | 1.3.14（打进 all-in-one 镜像） |
+| 数据库 | MySQL 8（容器外，宿主机 127.0.0.1:3306，库名 `omp`，user `root`） |
+| code-server | v4.124.2（codercom/code-server:latest，独立容器） |
+| 部署形态 | **omp-app**（前端+后端+omp 三合一）+ **code-server**（独立容器） |
+
+### 18.2 服务地址
+
+| 服务 | 地址 | 来源 |
+|---|---|---|
+| 前端 | http://10.126.2.120:8000/ | omp-app 容器（nginx 80 → 宿主 8000） |
+| 后端 API | http://10.126.2.120:8080 | omp-app 容器 |
+| code-server | http://10.126.2.120:5000/ | code-server 独立容器（8080 → 宿主 5000） |
+| MySQL | 172.17.0.1:3306（容器内）/ 宿主 3306 | 宿主机已有的 MySQL 8 实例 |
+
+容器内访问 MySQL 用宿主 docker0 网关 `172.17.0.1`，不能用 127.0.0.1。
+
+### 18.3 Docker 卷（数据持久化）
+
+| 卷名 | 宿主物理路径 | 容器内挂载 |
+|---|---|---|
+| `omp-workspaces` | `/data/docker/volumes/omp-workspaces/_data` | omp-app: `/data/omp/workspaces`、code-server: `/data/omp/workspaces` |
+| `omp-agent` | `/data/docker/volumes/omp-agent/_data` | omp-app: `/data/omp/agent` |
+| `omp-logs` | `/data/docker/volumes/omp-logs/_data` | omp-app: `/data/omp/logs` |
+
+> ⚠️ **同卷同路径**：`omp-workspaces` 必须在两个容器内挂到**完全相同**的路径
+> `/data/omp/workspaces`。后端 IDE 按钮生成的 URL 是 `?folder=/data/omp/workspaces/<user>/<repo>`（绝对路径），
+> code-server 容器内必须存在同名路径，否则报 "Workspace does not exist"。
+
+### 18.4 omp-app 容器（all-in-one：前端 + 后端 + omp）
+
+**构建上下文** `/home/omp/docker-build/`：
+
+```
+/home/omp/docker-build/
+├── Dockerfile
+├── entrypoint.sh              # nginx + java，容器启动脚本
+├── nginx/                     # 容器内 nginx 整套配置（详见 18.4.1）
+│   ├── nginx.conf             #   顶层：只负责调度
+│   └── conf.d/
+│       ├── omp-main.conf             #   本工程主 location（前端 + 后端）
+│       └── omp-services-locations.conf  # 业务工程 location 片段（热加载）
+├── omp-dev.sh                 # 容器内 omp 入口（被后端 spawn）
+├── prod-application.yml       # 生产配置（DB / IDE / JWT）
+├── jdk21/                     # JDK 21（打进镜像）
+├── bun                        # bun 二进制（打进镜像）
+├── omp-backend-0.1.0.jar      # 后端 fat-jar
+├── dist/                      # 前端静态产物
+└── omp/                       # omp 源码 + node_modules + linux .node
+```
+
+**Dockerfile**：
+
+```dockerfile
+FROM ubuntu:22.04
+
+# 装运行时依赖: nginx(前端) + git(workspace) + ca-certificates + tini(进程管理)
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.tencentyun.com|g; s|http://security.ubuntu.com|http://mirrors.tencentyun.com|g' /etc/apt/sources.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      nginx git ca-certificates tini curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# JDK 21
+COPY jdk21 /usr/local/jdk21
+ENV PATH=/usr/local/jdk21/bin:/usr/local/bin:$PATH
+
+# bun
+COPY bun /usr/local/bin/bun
+RUN chmod +x /usr/local/bin/bun
+
+# RTK (Rust Token Killer) —— 压缩 LLM agent 调 shell 时的输出，60-90% token 节省。
+# 装 musl 静态二进制（不挑 libc，无运行时依赖）。固定版本以保证可复现，
+# 升级见 https://github.com/rtk-ai/rtk/releases。
+ARG RTK_VERSION=v0.42.4
+RUN curl -fsSL "https://gh-proxy.com/https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" \
+      -o /tmp/rtk.tar.gz \
+    && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin/ rtk \
+    && chmod +x /usr/local/bin/rtk \
+    && rm /tmp/rtk.tar.gz \
+    && rtk --version
+
+# RTK Pi-style 扩展安装到 omp 认的用户扩展目录。`rtk init --agent pi` 会把扩展
+# 写到 ~/.pi/agent/extensions/rtk.ts（Pi 上游约定），但 omp 原生只扫描
+# ~/.omp/agent/extensions/，所以拷一份到那里。后端 spawn omp 时还会显式传
+# --extension 指向这个绝对路径（见 OmpProcessSpec.toArgv），双保险。
+RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.pi/agent/extensions/rtk.ts /root/.omp/agent/extensions/rtk.ts
+
+# ============================================================================
+# 多语言开发环境（开发容器用）
+# ----------------------------------------------------------------------------
+# 装 Node 22 / Python 3 / uv / Go 1.23 / Rust stable，便于在容器内直接开发
+# 各种语言的服务。所有源走镜像加速（国内服务器拉取稳定）。
+# 版本与增量：
+#   - Node 22 LTS    +~120 MB（NodeSource 仓库）
+#   - Python 3.10+   +~150 MB（Ubuntu apt + pip + venv）
+#   - uv             +~30 MB（astral-sh 静态二进制）
+#   - Go 1.23        +~700 MB（官方 tarball）
+#   - Rust stable    +~1.2 GB（rustup 含 cargo + rustc）
+# 合计：镜像增加约 2.2 GB。生产实例不需要这些，dev-only。
+# ============================================================================
+ARG GO_VERSION=1.23.4
+ARG UV_VERSION=0.11.23
+
+# Node 22 LTS（官方 tarball，可控版本。NodeSource 仓库国内不友好，弃用）
+ARG NODE_VERSION=22.11.0
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+      -o /tmp/node.tar.gz \
+    && tar -C /usr/local -xzf /tmp/node.tar.gz --strip-components=1 \
+    && rm /tmp/node.tar.gz \
+    && node --version && npm --version
+
+# Python 3 + pip + venv（Ubuntu 22.04 自带 3.10，腾讯云 apt 镜像源已在上面配好）
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 --version && pip3 --version
+
+# uv（Python 极速包管理器，astral-sh 静态二进制）
+# uv tarball 顶层是 uv-<triple>/ 目录，需要 --strip-components=1
+RUN curl -fsSL "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+      -o /tmp/uv.tar.gz \
+    && tar -xzf /tmp/uv.tar.gz -C /usr/local/bin/ --strip-components=1 \
+    && rm /tmp/uv.tar.gz \
+    && uv --version
+
+# Go 1.23（官方 tarball，控制版本）
+RUN curl -fsSL "https://gh-proxy.com/https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+      -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz \
+    && /usr/local/go/bin/go version
+
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
+
+# Rust stable（rustup，装到 /root/.cargo/bin，并加到 PATH）
+RUN curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs \
+      | sh -s -- -y --default-toolchain stable --profile minimal \
+    && echo 'source $HOME/.cargo/env' >> /root/.bashrc
+
+ENV PATH=/root/.cargo/bin:$PATH
+ENV CARGO_HOME=/root/.cargo RUSTUP_HOME=/root/.rustup
+
+# 核心开发工具:
+#   vim            —— 容器内编辑(改 nginx conf、查日志改文件等)
+#   jq             —— JSON 解析(看 API 响应/日志)
+#   build-essential—— gcc/g++/make,Rust cargo build / Python pip 装 C 扩展 / Go cgo 都需要
+#   net-tools      —— netstat 等网络/端口诊断(配合 iproute2 的 ss)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         vim jq build-essential net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# 应用产物
+WORKDIR /app
+COPY omp-backend-0.1.0.jar /app/omp-backend-0.1.0.jar
+COPY dist /app/dist
+COPY omp /app/omp
+COPY prod-application.yml /app/prod-application.yml
+COPY omp-dev.sh /app/omp/scripts/omp-dev.sh
+RUN chmod +x /app/omp/scripts/omp-dev.sh
+
+# nginx 配置
+COPY nginx/ /etc/nginx/
+# 顶层 nginx.conf 在 /etc/nginx/nginx.conf
+# 本工程主 location 在 /etc/nginx/conf.d/omp-main.conf
+# 业务工程 location 片段在 /etc/nginx/conf.d/omp-services-locations.conf
+
+# 启动脚本
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 80 8080
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+```
+
+**entrypoint.sh**：
+
+```bash
+#!/bin/bash
+set -e
+mkdir -p /data/omp/workspaces /data/omp/agent /data/omp/logs
+echo "[entrypoint] 启动 nginx..."
+nginx
+echo "[entrypoint] 启动后端 java..."
+export OMP_BIN=/app/omp/scripts/omp-dev.sh
+cd /app
+exec /usr/local/jdk21/bin/java -jar /app/omp-backend-0.1.0.jar \
+  --spring.config.additional-location=file:/app/prod-application.yml \
+  --spring.profiles.active=prod
+```
+
+**生产配置 `prod-application.yml`** 关键字段：
+
+```yaml
+spring:
+  datasource:
+    # ⚠️ 容器内用宿主网关访问 MySQL，不是 127.0.0.1
+    url: jdbc:mysql://172.17.0.1:3306/omp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: <db-password>
+  jpa:
+    hibernate:
+      ddl-auto: none
+  flyway:
+    enabled: false    # 表手动创建，不跑 migration
+
+app:
+  omp:
+    binary: /app/omp/scripts/omp-dev.sh       # 容器内 omp 入口
+    workspaces-root: /data/omp/workspaces     # 与 code-server 容器同路径
+    agent-root: /data/omp/agent
+    stderr-log-dir: /data/omp/logs
+    ide:
+      enabled: true
+      public-base-url: http://10.126.2.120:5000   # 浏览器访问 code-server 的地址
+  security:
+    jwt-secret: <64 字符随机值>
+    jwt-ttl-hours: 24
+    bootstrap-admin:
+      username: admin
+      password: admin
+```
+
+#### 18.4.1 nginx 配置文件拆分(本工程 vs 业务工程)
+
+容器内 nginx 配置文件被拆成 3 份,**职责明确、避免互相干扰**:
+
+| 文件路径 | 职责 | 修改频率 |
+|---|---|---|
+| `/etc/nginx/nginx.conf` | 顶层调度:events / http / include | 极低,几乎不改 |
+| `/etc/nginx/conf.d/omp-main.conf` | **本工程主 location**:web 前端(`/`)+ java 后端(`/api/`、`/admin/`、`/ws/`)+ 业务 location 引用 | 改本工程时 → 重建镜像 |
+| `/etc/nginx/conf.d/omp-services-locations.conf` | **业务工程反代 location 片段**。注释模板覆盖 Java/Go/Python/Vue SPA/WebSocket | **日常开发改这个即可,免重建** |
+
+**加载关系**:
+```
+nginx.conf
+  └─ http { include /etc/nginx/conf.d/*.conf; }
+       ├─ omp-main.conf        # 定义 server { listen 80; ... include ...-locations.conf; }
+       └─ omp-services-locations.conf  # 仅作为 location 片段被 omp-main 引入
+```
+
+> ⚠️ `omp-services-locations.conf` 是被 include 进 server 块内部的 location 片段,
+> **不能写 `server {}`**,否则 nginx 会报端口冲突。
+
+**开发流程(加业务服务)**:
+
+1. 在容器内启动业务服务监听容器内某端口(9001、9002 等)
+2. 进容器 `docker exec -it omp-app bash`
+3. `vim /etc/nginx/conf.d/omp-services-locations.conf`,取消对应模板的注释、改路径
+4. `nginx -t` 测语法 → `nginx -s reload` 热加载
+5. 浏览器访问 `http://<server>:8000/<你的前缀>/...` 测试
+
+**模板覆盖 5 个常见场景**:
+- ① Java/Go/Python 纯 API(末尾 `/` strip 路径前缀)
+- ② Vue SPA(history 模式 + fallback)
+- ③ WebSocket(`Upgrade/Connection` 头 + 拉长 read_timeout)
+- ④ 大请求体上传(`client_max_body_size`)
+- ⑤ 大文件下载(`proxy_buffering off`)
+
+**重要事项**:
+- 容器内 nginx 监听 **80**;外部访问经 `8000:80` 端口映射
+- 容器内自测: `curl -sI http://127.0.0.1:80/<前缀>/`
+- 容器外自测: `curl -sI http://<server>:8000/<前缀>/`
+- 容器内改的 `/etc/nginx/conf.d/omp-services-locations.conf` 不会被外面
+  重新部署覆盖,直到下次 `docker run` 重建容器(开发期间无影响,生产前
+  应把新增 location 同步到本工程源码 `deploy/nginx/conf.d/` 纳入版本控制)
+
+**nginx.conf**（容器内）：
+
+```nginx
+worker_processes 1;
+error_log /var/log/nginx/error.log warn;
+pid /run/nginx.pid;
+events { worker_connections 1024; }
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    keepalive_timeout 65;
+    server {
+        listen 80;
+        server_name _;
+        root /app/dist;
+        index index.html;
+        location / { try_files $uri $uri/ /index.html; }
+        location ~* \.(js|css|woff2?|svg|png|ico|jpg|gif)$ {
+            expires 7d;
+            add_header Cache-Control "public, max-age=604800, immutable";
+        }
+        location /api/ {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+        location /admin/ {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        }
+        location /ws/ {
+            proxy_pass http://127.0.0.1:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $host;
+            proxy_read_timeout 86400;
+        }
+    }
+}
+```
+
+**构建与启动**：
+
+```bash
+# 1) 创建持久化卷（一次性）
+docker volume create omp-workspaces
+docker volume create omp-agent
+docker volume create omp-logs
+
+# 2) 构建镜像
+cd /home/omp/docker-build
+docker build -t omp-allinone:latest .
+
+# 3) 启动容器
+docker run -d --restart unless-stopped --name omp-app \
+  -p 8000:80 -p 8080:8080 \
+  -v omp-workspaces:/data/omp/workspaces \
+  -v omp-agent:/data/omp/agent \
+  -v omp-logs:/data/omp/logs \
+  omp-allinone:latest
+```
+
+### 18.5 code-server 容器（独立）
+
+```bash
+docker run -d --restart unless-stopped --name code-server \
+  -p 5000:8080 \
+  --user root \
+  -v omp-workspaces:/data/omp/workspaces \
+  -v /home/omp/app/ide/data:/root/.local \
+  -v /home/omp/app/ide/config:/root/.config \
+  codercom/code-server:latest \
+  --auth none --port 8080
+```
+
+> ⚠️ **关键约束**：
+> 1. **同路径挂载**：`omp-workspaces` 卷必须挂到容器内 `/data/omp/workspaces`，
+>    与后端 `app.omp.workspaces-root` 完全一致。否则 IDE 按钮生成的 URL
+>    `?folder=/data/omp/workspaces/<user>/<repo>` 在容器内找不到目录。
+> 2. **启动命令结尾不能带目录**：`--port 8080` 后面不要追加 `.` 或任何路径，
+>    否则工作区会被锁死、`?folder=` 被忽略。
+> 3. **`--user root`**：工作区文件由 root 创建时需要。data/config 卷相应
+>    挂到 `/root/.local`、`/root/.config`（持久化扩展和设置）。
+
+### 18.6 修复过的关键问题（历史记录）
+
+| 问题 | 修复 |
+|---|---|
+| 服务器 git 2.27.0 不支持 `git init -b main` | 改为 `git init` + `git branch -M main` |
+| omp-dev.sh 指向 macOS 路径 | 重写为 `/usr/local/bin/bun /app/omp/.../cli.ts` |
+| code-server `-it --rm` 模式退出即消失 | 改为 `-d --restart unless-stopped` 守护模式 |
+| code-server 3000 端口被 one-api-prod 占用 | 改用 5000 端口 |
+| code-server 报 "Workspace does not exist" | ① 启动命令结尾误带 `.` 锁死工作区；② 工作区需**同卷同路径挂载**；③ root 创建的文件需 `--user root` |
+| 前端浏览器缓存旧版导致页面混乱 | rsync `--delete` 清空旧文件 + 用户 Cmd+Shift+R |
+| nginx `rewrite or internal redirection cycle` | SSH heredoc 多层转义把 `$uri` 写成 `\$uri` 字面量；改用 `scp` 上传 nginx.conf |
+| 容器连不上 MySQL | 容器内 127.0.0.1 是容器自己 → 改用 `172.17.0.1` 宿主网关 |
+
+---
+
+## 19. 日常更新（120 容器化方案）
+
+### 19.1 改了什么 → 需要做什么
+
+| 改动 | 操作 |
+|---|---|
+| Java 代码（`backend/src/`） | 本地 `mvn package` → rsync jar → 重建 omp-allinone 镜像 → 重启 omp-app |
+| Vue 代码（`web/src/`） | 本地 `bun run build` → rsync dist → 重建 omp-allinone 镜像 → 重启 omp-app |
+| 配置 `prod-application.yml` | scp 到 `/home/omp/docker-build/` → 重建镜像 → 重启 omp-app |
+| omp 源码 / omp-dev.sh | rsync omp 目录 → 重建镜像 → 重启 omp-app |
+| Rust 代码（`crates/`） | 重交叉编译 .node + 重打 jar → rsync → 重建镜像 → 重启 |
+
+> 数据在 docker volume 里，容器重建不丢数据。改前端/后端时 omp 层 docker 缓存命中，构建很快。
+
+### 19.2 一键更新（前后端）
+
+```bash
+SERVER=root@10.126.2.120
+
+# 本地：构建产物
+cd /Users/chenzhiwei/work/github/oh-my-pi-main
+export JAVA_HOME="/Users/chenzhiwei/Library/Java/JavaVirtualMachines/ms-21.0.10/Contents/Home"
+(cd backend && mvn -DskipTests package -q) && \
+  rsync -az backend/target/omp-backend-0.1.0.jar $SERVER:/home/omp/docker-build/
+
+(cd web && bun run build) && \
+  rsync -az --delete web/dist/ $SERVER:/home/omp/docker-build/dist/
+
+# 服务器：重建镜像 + 重启容器
+ssh $SERVER 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && \
+  docker rm -f omp-app && \
+  docker run -d --restart unless-stopped --name omp-app \
+    -p 8000:80 -p 8080:8080 \
+    -v omp-workspaces:/data/omp/workspaces \
+    -v omp-agent:/data/omp/agent \
+    -v omp-logs:/data/omp/logs \
+    omp-allinone:latest && \
+  sleep 10 && docker logs omp-app | tail -3'
+```
+
+### 19.3 仅更新前端
+
+```bash
+cd /Users/chenzhiwei/work/github/oh-my-pi-main/web && bun run build
+# 镜像里前端是 COPY 进去的，必须重建镜像才能让 nginx serve 新内容
+rsync -az --delete dist/ root@10.126.2.120:/home/omp/docker-build/dist/
+ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && docker restart omp-app'
+```
+
+### 19.4 仅改 prod 配置
+
+```bash
+scp prod-application.yml root@10.126.2.120:/home/omp/docker-build/
+ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && docker restart omp-app'
+```
+
+### 19.5 运维命令速查
+
+```bash
+SERVER=root@10.126.2.120
+
+# 状态
+ssh $SERVER 'docker ps --format "{{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}" | grep -E "omp-app|code-server"'
+
+# 后端日志（实时）
+ssh $SERVER 'docker logs -f omp-app'
+
+# omp 子进程日志（按 session 分文件，在 volume 里）
+ssh $SERVER 'docker exec omp-app ls /data/omp/logs/'
+ssh $SERVER 'docker exec omp-app tail -f /data/omp/logs/omp-<session-id>.err.log'
+
+# 进容器排查
+ssh $SERVER 'docker exec -it omp-app bash'
+
+# 重启 omp-app
+ssh $SERVER 'docker restart omp-app'
+
+# 重启 code-server
+ssh $SERVER 'docker restart code-server'
+
+# 升级 code-server 镜像（注意：同路径挂载 + 结尾不带 . + --user root）
+ssh $SERVER 'docker pull codercom/code-server:latest && \
+  docker rm -f code-server && \
+  docker run -d --restart unless-stopped --name code-server \
+    -p 5000:8080 --user root \
+    -v omp-workspaces:/data/omp/workspaces \
+    -v /home/omp/app/ide/data:/root/.local \
+    -v /home/omp/app/ide/config:/root/.config \
+    codercom/code-server:latest --auth none --port 8080'
+
+# 备份 workspaces 卷
+ssh $SERVER 'docker run --rm -v omp-workspaces:/data -v /home/omp/backup:/backup \
+  ubuntu tar -czf /backup/workspaces-$(date +%Y%m%d).tar.gz -C /data .'
+
+# 备份 code-server 数据（扩展、设置）
+ssh $SERVER 'tar -czf /home/omp/backup/code-server-data-$(date +%Y%m%d).tar.gz /home/omp/app/ide/'
+```
+

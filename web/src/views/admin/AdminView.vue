@@ -5,7 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog, NPagination } from 'naive-ui'
 import { api } from '@/api/http'
 import { unarchive as unarchiveSession } from '@/api/session'
-import { listSessionsPaged, listAuditPaged } from '@/api/admin'
+import { listSessionsPaged, listAuditPaged, getMaintenanceStatus, enableMaintenance, disableMaintenance, getStreamingSessions, type MaintenanceStatus, type StreamingSession } from '@/api/admin'
 import { OMP_CONFIG_DEFINITIONS, getConfigDef, getConfigValueOptions, CONFIG_KEY_GROUPS, type ConfigItemDef } from '@/api/omp-config'
 
 const props = defineProps<{ initialTab?: 'config' | 'sessions' | 'audit' }>()
@@ -48,6 +48,10 @@ function toggleGroup(sid: string) {
   collapsedGroups.value = s
 }
 const pool = ref<any>(null)
+const maintenance = ref<MaintenanceStatus>({ enabled: false })
+const streamingSessions = ref<StreamingSession[]>([])
+const maintenanceLoading = ref(false)
+const streamingModalOpen = ref(false)
 const newKey = ref('')
 const newValue = ref('')
 const newKeySearch = ref('')
@@ -252,7 +256,7 @@ function clearOverride(id: string) {
   const m = loadOverrides(); delete m[id]; saveOverrides(m)
 }
 
-async function loadAll() { await Promise.all([loadConfig(), loadSessions(), loadAudit()]) }
+async function loadAll() { await Promise.all([loadConfig(), loadSessions(), loadAudit(), loadMaintenanceStatus()]) }
 
 /** Group audit items by sessionId, each group sorted by time descending. */
 const auditGroups = computed(() => {
@@ -458,7 +462,111 @@ function fmtDate(s?: string | number) {
   const d = new Date(s)
   return `${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+function fmtDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  return `${h}h ${m}m`
+}
 function pretty(v: any): string { if (v == null) return '—'; if (typeof v === 'string') return v; return JSON.stringify(v, null, 2) }
+
+// ============================================================================
+// 系统维护
+// ============================================================================
+
+async function loadMaintenanceStatus() {
+  try {
+    const s = await getMaintenanceStatus()
+    maintenance.value = s ?? { enabled: false }
+  } catch (e: any) {
+    maintenance.value = { enabled: false }
+    console.warn('[maintenance] load status failed', e?.message)
+  }
+}
+async function loadStreamingSessions() {
+  try {
+    const r = await getStreamingSessions()
+    streamingSessions.value = r?.items ?? []
+  } catch (e: any) {
+    streamingSessions.value = []
+    msg.error('加载推流会话失败：' + (e?.response?.data?.message || e?.message || '未知错误'))
+  }
+}
+async function handleEnableMaintenance() {
+  dialog.warning({
+    title: '⚠️ 开启系统维护',
+    content: '确认开启维护模式？\n\n开启后将拒绝以下请求（已有会话继续推流不受影响）：\n  · 新建会话 / 发送消息 / 干预\n  · 切换 / 分支 / 压缩上下文\n  · 取消归档 / 恢复会话\n  · 新的 WebSocket 连接\n\n维护模式 7 天后自动解除，或可手动解除。',
+    positiveText: '我已确认，开启维护',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      maintenanceLoading.value = true
+      try {
+        await enableMaintenance()
+        await loadMaintenanceStatus()
+        msg.success('已开启维护模式')
+      } catch (e: any) {
+        const errMsg = e?.response?.status === 404
+          ? '后端尚未部署维护接口，请先重启后端服务'
+          : (e?.response?.data?.message || e?.message || '开启失败')
+        msg.error(errMsg)
+      } finally {
+        maintenanceLoading.value = false
+      }
+    },
+  })
+}
+async function handleDisableMaintenance() {
+  dialog.warning({
+    title: '⚠️ 解除维护模式',
+    content: '确认解除维护模式？\n\n解除后将立即恢复接收新会话和新对话请求。\n\n请确保服务更新已部署完成。',
+    positiveText: '确认解除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      maintenanceLoading.value = true
+      try {
+        await disableMaintenance()
+        await loadMaintenanceStatus()
+        msg.success('已解除维护模式')
+      } catch (e: any) {
+        const errMsg = e?.response?.status === 404
+          ? '后端尚未部署维护接口，请先重启后端服务'
+          : (e?.response?.data?.message || e?.message || '解除失败')
+        msg.error(errMsg)
+      } finally {
+        maintenanceLoading.value = false
+      }
+    },
+  })
+}
+async function openStreamingDialog() {
+  await loadStreamingSessions()
+  streamingModalOpen.value = true
+}
+/** 推流为 0 时，用户点击「我已确认，可以更新」时的二次确认。 */
+function confirmReadyToDeploy() {
+  dialog.success({
+    title: '✓ 可以执行更新',
+    content: '当前没有正在推流的会话，您可以安全地执行服务更新。\n\n建议：\n  · 维护模式已保护新请求，可放心更新\n  · 更新部署完成后，记得点击「解除维护」恢复服务',
+    positiveText: '知道了',
+    onPositiveClick: () => {
+      streamingModalOpen.value = false
+    },
+  })
+}
+// 维护状态 badge 文本
+function maintenanceBadgeText() {
+  if (!maintenance.value.enabled) return null
+  const s = maintenance.value
+  if (!s.expiresAt) return '维护中'
+  const now = new Date()
+  const exp = new Date(s.expiresAt)
+  const diff = Math.round((exp.getTime() - now.getTime()) / 1000)
+  if (diff < 60) return '维护中（即将结束）'
+  if (diff < 3600) return `维护中（还剩 ${Math.round(diff / 60)} 分钟）`
+  if (diff < 86400) return `维护中（还剩 ${Math.round(diff / 3600)} 小时）`
+  return `维护中（还剩 ${Math.round(diff / 86400)} 天）`
+}
 
 function logout() { auth.logout(); router.replace('/login') }
 
@@ -617,6 +725,24 @@ onMounted(() => {
             :disabled="!activeSessions"
             @click="confirmKillAllSessions"
           >终止所有会话</button>
+          <button
+            v-if="auth.hasPerm('omp:system:maintenance')"
+            class="btn-mini-warning"
+            :disabled="maintenanceLoading"
+            @click="maintenance.enabled ? handleDisableMaintenance() : handleEnableMaintenance()"
+          >{{ maintenance.enabled ? '解除维护' : '系统维护' }}</button>
+          <button
+            v-if="auth.hasPerm('omp:system:maintenance')"
+            class="btn-mini-info"
+            @click="openStreamingDialog"
+          >推流监控</button>
+          <span
+            v-if="auth.hasPerm('omp:system:maintenance') && maintenance.enabled"
+            class="maintenance-badge"
+            title="系统维护中，新会话/对话已被拦截"
+          >
+            <span class="pulse-dot"></span> {{ maintenanceBadgeText() }}
+          </span>
           <span class="serial">池占用 <strong class="accent">{{ poolUsed }}</strong> / 10</span>
         </div>
       </header>
@@ -738,6 +864,47 @@ onMounted(() => {
       </div>
     </section>
   </div>
+
+  <!-- 推流会话监控对话框 -->
+  <Teleport to="body">
+    <div v-if="streamingModalOpen" class="modal-backdrop" @click.self="streamingModalOpen = false">
+      <div class="modal-card" style="min-width: 700px;">
+        <div class="modal-head">
+          <h3>推流会话监控</h3>
+          <button class="close-btn" @click="streamingModalOpen = false">&times;</button>
+        </div>
+        <div class="modal-body" style="max-height: 500px; overflow: auto;">
+          <div v-if="!streamingSessions.length" class="empty-state" style="text-align: center; padding: 40px 20px; color: var(--ink-mute);">
+            <span style="font-size: 28px; display: block; margin-bottom: 10px;">✓</span>
+            无正在推流的会话，可执行服务更新
+          </div>
+          <div v-else>
+            <div class="streaming-warning" style="background: var(--danger-soft); padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; color: var(--danger); font-weight: 500; font-size: 13px;">
+              ⚠️ 共有 <strong>{{ streamingSessions.length }}</strong> 个会话正在推流，此时重启服务会导致会话中断，建议等待全部完成后再执行更新
+            </div>
+            <div class="streaming-table">
+              <div class="row head" style="font-weight: 600; color: var(--ink-2);">
+                <span>会话 ID</span>
+                <span>标题</span>
+                <span>用户 ID</span>
+                <span>推流时长</span>
+              </div>
+              <div v-for="s in streamingSessions" :key="s.sessionId" class="row">
+                <code style="font-family: var(--font-mono); font-size: 12px;">{{ s.sessionId.slice(0, 12) }}...</code>
+                <span style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="s.title">{{ s.title || '（无标题）' }}</span>
+                <span>{{ s.userId ?? '—' }}</span>
+                <span style="color: var(--danger); font-weight: 500;">{{ fmtDuration(s.streamingSeconds) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn-secondary" @click="streamingModalOpen = false">关闭</button>
+          <button class="btn-primary" v-if="streamingSessions.length === 0" @click="confirmReadyToDeploy">我已确认，可以更新</button>
+        </div>
+      </div>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -1354,4 +1521,148 @@ onMounted(() => {
   .audit-row { grid-template-columns: 80px 1fr; }
   .audit-row > :nth-child(2) { display: none; }  /* hide type badge */
 }
+
+/* ====================================================================
+   维护按钮 / 推流监控对话框
+   ==================================================================== */
+.btn-mini-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid #f5a623;
+  background: rgba(245, 166, 35, 0.12);
+  color: #f5a623;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.btn-mini-warning:hover:not(:disabled) { background: #f5a623; color: #fff; }
+.btn-mini-warning:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-mini-info {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid #4a90e2;
+  background: rgba(74, 144, 226, 0.12);
+  color: #4a90e2;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.btn-mini-info:hover { background: #4a90e2; color: #fff; }
+
+.maintenance-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  background: rgba(245, 166, 35, 0.15);
+  border: 1px solid rgba(245, 166, 35, 0.4);
+  color: #f5a623;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+}
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f5a623;
+  animation: pulse-anim 1.5s ease-in-out infinite;
+}
+@keyframes pulse-anim {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+/* 模态框 */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  backdrop-filter: blur(2px);
+}
+.modal-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  max-width: 90vw;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.modal-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.close-btn {
+  border: none;
+  background: transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 4px;
+}
+.close-btn:hover { color: var(--ink-1); }
+.modal-body { padding: 20px 24px; }
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+.btn-secondary {
+  padding: 6px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--ink-1);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.btn-secondary:hover { background: var(--surface-hover); }
+
+.streaming-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.streaming-table .row {
+  display: grid;
+  grid-template-columns: 140px 1fr 80px 120px;
+  gap: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+}
+.streaming-table .row:last-child { border-bottom: none; }
+.streaming-table .row.head { background: var(--surface-soft); font-size: 12px; }
+
 </style>

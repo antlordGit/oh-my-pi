@@ -4,9 +4,9 @@ spring:
     activate:
       on-profile: prod
   datasource:
-    url: ${OMP_DB_URL:jdbc:mysql://119.29.237.63:3306/omp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
-    username: ${OMP_DB_USER:root}
-    password: ${OMP_DB_PASSWORD:Txy@2014}
+    url: ${OMP_DB_URL:jdbc:mysql://127.0.0.1:3306/omp?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: root
+    password: a5gkwGI$!@Xea
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       maximum-pool-size: 20

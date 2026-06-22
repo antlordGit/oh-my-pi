@@ -6,6 +6,7 @@ import {
   prompt, abort as abortSession, unarchive as unarchiveSession, newSession as newSessionRpc, wsUrl,
   openSessionIde,
   type SessionSummary,
+  type ImageContent,
 } from '@/api/session'
 import { useMessage } from 'naive-ui'
 import MessageBubble from '@/components/MessageBubble.vue'
@@ -25,6 +26,111 @@ const input = ref('')
 const sending = ref(false)
 const isStreaming = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
+
+// ========================================================================
+// 图片附件（粘贴 / 按钮 / 拖拽）— 不持久化，仅作为本次 prompt 的瞬时附件
+// ========================================================================
+type PendingImage = {
+  id: string
+  dataUrl: string  // 用于本地预览
+  mimeType: string
+  base64: string   // 去除 dataUrl 前缀的纯 base64 数据，发送给后端
+  size: number
+  name: string
+}
+const pendingImages = ref<PendingImage[]>([])
+const fileInputEl = ref<HTMLInputElement | null>(null)
+const isDragging = ref(false)
+// 点击缩略图后的全屏预览
+const previewImage = ref<PendingImage | null>(null)
+function openPreview(img: PendingImage) { previewImage.value = img }
+function closePreview() { previewImage.value = null }
+function onPreviewKeydown(e: KeyboardEvent) {
+  if (previewImage.value && e.key === 'Escape') { e.preventDefault(); closePreview() }
+}
+onMounted(() => { window.addEventListener('keydown', onPreviewKeydown) })
+onUnmounted(() => { window.removeEventListener('keydown', onPreviewKeydown) })
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024
+const MAX_IMAGES = 5
+const ACCEPT_MIME = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+
+function readAsDataUrl(f: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(String(r.result))
+    r.onerror = () => reject(r.error)
+    r.readAsDataURL(f)
+  })
+}
+
+async function addFiles(files: FileList | File[] | null | undefined) {
+  if (!files) return
+  for (const f of Array.from(files)) {
+    if (!ACCEPT_MIME.has(f.type)) {
+      msg.warning(`不支持的图片类型：${f.type || f.name}`)
+      continue
+    }
+    if (f.size > MAX_IMAGE_BYTES) {
+      msg.warning(`图片超过 5MB：${f.name}`)
+      continue
+    }
+    if (pendingImages.value.length >= MAX_IMAGES) {
+      msg.warning(`最多 ${MAX_IMAGES} 张图片`)
+      break
+    }
+    try {
+      const dataUrl = await readAsDataUrl(f)
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      pendingImages.value.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        dataUrl, mimeType: f.type, base64, size: f.size, name: f.name,
+      })
+    } catch {
+      msg.warning(`读取图片失败：${f.name}`)
+    }
+  }
+}
+
+function removeImage(id: string) {
+  pendingImages.value = pendingImages.value.filter(x => x.id !== id)
+}
+
+function onPaste(e: ClipboardEvent) {
+  const items = Array.from(e.clipboardData?.items || [])
+  const imgs = items.filter(it => it.kind === 'file' && it.type.startsWith('image/'))
+  if (!imgs.length) return
+  e.preventDefault()
+  addFiles(imgs.map(it => it.getAsFile()).filter((x): x is File => !!x))
+}
+
+function onPickClick() { fileInputEl.value?.click() }
+
+function onPickChange(e: Event) {
+  const t = e.target as HTMLInputElement
+  addFiles(t.files)
+  t.value = ''  // 允许重复选择同一文件
+}
+
+function onDragOver(e: DragEvent) {
+  // 仅当拖入文件时才高亮（过滤纯文本选区拖拽）
+  if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) {
+    e.preventDefault()
+    isDragging.value = true
+  }
+}
+function onDragLeave(e: DragEvent) {
+  // 仅当离开外层容器时取消高亮
+  if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) {
+    isDragging.value = false
+  }
+}
+function onDrop(e: DragEvent) {
+  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return
+  e.preventDefault()
+  isDragging.value = false
+  addFiles(e.dataTransfer.files)
+}
 
 type TimelineItem =
   | { kind: 'thinking'; text: string; order: number }
@@ -248,14 +354,14 @@ function handleFrame(frame: any) {
         if (last?.kind === 'thinking') { last.text += evt.delta || '' }
         else { timeline.value.push({ kind: 'thinking', text: evt.delta || '', order: itemOrder++ }) }
       } else if (evt?.type === 'toolcall') {
-        timeline.value.push({ kind: 'toolcall', id: evt.id, name: evt.name, args: evt.arguments, status: 'running', order: itemOrder++ })
+        timeline.value.push({ kind: 'toolcall', id: evt.id, name: evt.name, args: evt.args ?? evt.arguments, status: 'running', order: itemOrder++ })
         toolCallById[evt.id] = timeline.value[timeline.value.length - 1] as any
       }
       break
     }
     case 'tool_execution_start': {
       if (!toolCallById[frame.toolCallId]) {
-        timeline.value.push({ kind: 'toolcall', id: frame.toolCallId, name: frame.toolName, args: frame.arguments, status: 'running', order: itemOrder++ })
+        timeline.value.push({ kind: 'toolcall', id: frame.toolCallId, name: frame.toolName, args: frame.args ?? frame.arguments, status: 'running', order: itemOrder++ })
         toolCallById[frame.toolCallId] = timeline.value[timeline.value.length - 1] as any
       }
       break
@@ -356,9 +462,13 @@ function sendUiResponse(id: string, value: string | boolean | null, cancelled: b
 function scrollToBottom() { nextTick(() => { if (messagesEl.value) messagesEl.value.scrollTop = messagesEl.value.scrollHeight }) }
 
 async function send() {
-  if (!input.value.trim() || sending.value || isStreaming.value) return
-  const text = input.value; input.value = ''; sending.value = true
-  if (text.trim() === '/tree') {
+  const hasText = !!input.value.trim()
+  const hasImages = pendingImages.value.length > 0
+  if ((!hasText && !hasImages) || sending.value || isStreaming.value) return
+  const text = input.value
+  // 仅当纯文本无图时支持 /tree 这种本地指令
+  if (!hasImages && text.trim() === '/tree') {
+    input.value = ''; sending.value = true
     try {
       const data = await getMessages(sessionId.value)
       const entries = buildTreeEntries(data.messages || [])
@@ -373,11 +483,16 @@ async function send() {
     finally { sending.value = false }
     return
   }
+  // 准备图片数据并清空预览（即使发送失败也清空，避免重复发送）
+  const images: ImageContent[] = pendingImages.value.map(p => ({ data: p.base64, mimeType: p.mimeType }))
+  input.value = ''
+  pendingImages.value = []
+  sending.value = true
   turnLog.value.push({ role: 'user', timeline: [], userText: text })
   timeline.value = []; itemOrder = 0
   Object.keys(toolCallById).forEach(k => delete toolCallById[k])
   scrollToBottom()
-  try { await prompt(sessionId.value, text) }
+  try { await prompt(sessionId.value, text, images.length ? images : undefined) }
   catch (e: any) { msg.error(e?.response?.data?.error || '发送失败') }
   finally { sending.value = false }
 }
@@ -551,6 +666,17 @@ onUnmounted(() => {
 })
 
 const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
+
+async function copyRepoId() {
+  const id = session.value?.repoId
+  if (!id) return
+  try {
+    await navigator.clipboard.writeText(id)
+    msg.success(`已复制：${id}`)
+  } catch {
+    msg.warning('复制失败，请手动选择文本')
+  }
+}
 </script>
 
 <template>
@@ -562,7 +688,22 @@ const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
         <span>返回</span>
       </button>
       <div class="topbar-meta">
-        <span class="serial">{{ session?.repoId || '—' }}</span>
+        <button
+          class="repo-chip"
+          type="button"
+          :title="`仓库：${session?.repoId || '—'}（点击复制）`"
+          :disabled="!session?.repoId"
+          @click="copyRepoId"
+        >
+          <svg class="repo-chip-icon" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M11.75 2.5a1.75 1.75 0 1 1-2.5 1.575v.06A1.75 1.75 0 0 1 7.5 5.875h-3.75a.25.25 0 0 0-.25.25v3.275a1.75 1.75 0 1 1-1 0V6.125A1.75 1.75 0 0 1 4.25 4.375H7.5a.25.25 0 0 0 .25-.25v-.05A1.75 1.75 0 1 1 11.75 2.5Z"
+              fill="currentColor"
+            />
+          </svg>
+          <span class="repo-chip-label mono">{{ session?.repoId || '—' }}</span>
+          <span class="repo-chip-hint mono" aria-hidden="true">copy</span>
+        </button>
         <h1 class="session-title">{{ session?.title || '未命名会话' }}</h1>
       </div>
     </header>
@@ -766,21 +907,88 @@ const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
         </button>
         <span class="rewind-hint"></span>
       </div>
-      <div class="composer-input-row">
-        <textarea
-          v-model="input"
-          class="composer-input field-raw"
-          rows="1"
-          :placeholder="isStreaming ? '正在生成中，可继续输入，生成完成后将自动发送…' : '在此描述你的需求，代理将在沙箱中执行…'"
-          @keydown.enter.ctrl.prevent="send"
-          @keydown.enter.meta.prevent="send"
-          :disabled="sending"
-        />
-        <button class="btn-primary send-btn" :disabled="sending || isStreaming || !input.trim()" @click="send">
-          {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}
-        </button>
+      <div
+        class="composer-drop"
+        :class="{ 'is-dragging': isDragging }"
+        @dragover="onDragOver"
+        @dragleave="onDragLeave"
+        @drop="onDrop"
+      >
+        <div v-if="pendingImages.length" class="composer-thumbs">
+          <div
+            v-for="img in pendingImages"
+            :key="img.id"
+            class="composer-thumb"
+            :title="`${img.name}（点击预览）`"
+            @click="openPreview(img)"
+          >
+            <img :src="img.dataUrl" :alt="img.name" />
+            <button class="composer-thumb-x" type="button" @click.stop="removeImage(img.id)" title="移除">✕</button>
+          </div>
+        </div>
+        <div class="composer-input-row">
+          <button
+            class="attach-btn"
+            :class="{ 'has-files': pendingImages.length > 0, 'is-active': isDragging }"
+            type="button"
+            :disabled="sending || isStreaming || pendingImages.length >= MAX_IMAGES"
+            @click="onPickClick"
+            :title="`添加图片（${pendingImages.length}/${MAX_IMAGES}，单张 ≤ 5MB）`"
+            :aria-label="`添加图片，已选 ${pendingImages.length} 张，上限 ${MAX_IMAGES} 张`"
+          >
+            <svg class="attach-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M16.5 6.5L8.62 14.38a3 3 0 1 0 4.24 4.24l8.59-8.59a5 5 0 1 0-7.07-7.07L5.79 11.55a7 7 0 1 0 9.9 9.9l7.07-7.07"
+                stroke="currentColor"
+                stroke-width="1.6"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                transform="translate(-2 -1)"
+              />
+            </svg>
+            <span v-if="pendingImages.length > 0" class="attach-badge mono" aria-hidden="true">{{ pendingImages.length }}</span>
+          </button>
+          <input
+            ref="fileInputEl"
+            type="file"
+            accept="image/png,image/jpeg,image/gif,image/webp"
+            multiple
+            hidden
+            @change="onPickChange"
+          />
+          <textarea
+            v-model="input"
+            class="composer-input field-raw"
+            rows="1"
+            :placeholder="isStreaming ? '正在生成中，可继续输入，生成完成后将自动发送…' : '在此描述你的需求，代理将在沙箱中执行…（支持粘贴 / 点击 📎 / 拖拽图片）'"
+            @keydown.enter.ctrl.prevent="send"
+            @keydown.enter.meta.prevent="send"
+            @paste="onPaste"
+            :disabled="sending"
+          />
+          <button
+            class="btn-primary send-btn"
+            :disabled="sending || isStreaming || (!input.trim() && pendingImages.length === 0)"
+            @click="send"
+          >
+            {{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}
+          </button>
+        </div>
       </div>
     </footer>
+
+    <!-- 图片全屏预览遮罩 -->
+    <div
+      v-if="previewImage"
+      class="image-preview-mask"
+      @click.self="closePreview"
+      @keydown.esc="closePreview"
+      tabindex="0"
+    >
+      <button class="image-preview-close" type="button" @click="closePreview" title="关闭（Esc）">✕</button>
+      <img class="image-preview-img" :src="previewImage.dataUrl" :alt="previewImage.name" @click.stop />
+      <div class="image-preview-caption mono">{{ previewImage.name }}</div>
+    </div>
   </div>
 </template>
 
@@ -916,6 +1124,79 @@ const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
   border-left: 1px solid var(--border);
   border-right: 1px solid var(--border);
   min-width: 0;
+}
+
+/* 仓库标识徽章 —— 显眼的可复制 chip */
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border: 1px solid var(--brand-soft-2);
+  border-radius: var(--radius-pill);
+  background: linear-gradient(135deg, var(--brand-soft) 0%, var(--brand-soft-2) 100%);
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  cursor: pointer;
+  position: relative;
+  transform: translateY(1px); /* baseline 对齐微调 */
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.18s ease, box-shadow 0.18s ease;
+}
+.repo-chip:hover:not(:disabled) {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--ink-invert);
+  box-shadow: 0 4px 14px -4px rgba(22, 93, 255, 0.45);
+}
+.repo-chip:active:not(:disabled) {
+  transform: translateY(2px) scale(0.97);
+}
+.repo-chip:disabled { cursor: default; opacity: 0.55; }
+.repo-chip-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+.repo-chip-label {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-ligatures: none;
+}
+.repo-chip-hint {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0;
+  max-width: 0;
+  overflow: hidden;
+  transition: max-width 0.22s ease, opacity 0.18s ease, margin-left 0.22s ease;
+}
+.repo-chip:hover:not(:disabled) .repo-chip-hint {
+  opacity: 0.85;
+  max-width: 40px;
+  margin-left: 2px;
+}
+/* 极细外发光呼吸，强调活动会话归属 */
+.repo-chip::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 1px solid var(--brand-soft);
+  opacity: 0;
+  animation: repo-chip-pulse 2.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes repo-chip-pulse {
+  0%, 100% { opacity: 0; transform: scale(1); }
+  50%      { opacity: 0.6; transform: scale(1.04); }
 }
 .session-title {
   font-family: var(--font-display);
@@ -1287,4 +1568,184 @@ const turnIndex = (i: number) => String(i + 1).padStart(2, '0')
   .composer-input-row .composer-input { padding: 10px 12px !important; }
   .composer-input-row .send-btn { width: 100%; margin: 0; border-radius: 0; }
 }
+
+/* ====================================================================
+   图片附件（粘贴 / 按钮 / 拖拽）
+   ==================================================================== */
+.composer-drop {
+  border: 1px dashed transparent;
+  border-radius: var(--radius);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.composer-drop.is-dragging {
+  border-color: var(--brand, #5b9cff);
+  background-color: rgba(91, 156, 255, 0.06);
+}
+.composer-thumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 8px 4px;
+}
+.composer-thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.composer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.composer-thumb { cursor: zoom-in; }
+.composer-thumb-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  text-align: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.composer-thumb:hover .composer-thumb-x { opacity: 1; }
+.attach-btn {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  margin: 4px 2px 4px 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ink-mute);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+  outline: none;
+}
+.attach-btn:hover:not(:disabled) {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+.attach-btn:hover:not(:disabled) .attach-icon { transform: rotate(-12deg) translateY(-1px); }
+.attach-btn:focus-visible {
+  box-shadow: 0 0 0 2px var(--brand-soft-2);
+}
+.attach-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+.attach-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+  color: var(--ink-faint);
+}
+.attach-btn.has-files {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+.attach-btn.is-active {
+  color: var(--brand);
+  background: var(--brand-soft-2);
+  animation: attach-pulse 1.2s ease-in-out infinite;
+}
+.attach-icon {
+  width: 18px;
+  height: 18px;
+  transition: transform 0.18s ease;
+  display: block;
+}
+.attach-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 9999px;
+  background: var(--brand);
+  color: var(--ink-invert);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  letter-spacing: 0;
+  box-shadow: 0 0 0 2px var(--surface);
+  animation: attach-badge-in 0.22s cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+@keyframes attach-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--brand-soft-2); }
+  50%      { box-shadow: 0 0 0 4px var(--brand-soft); }
+}
+@keyframes attach-badge-in {
+  from { transform: scale(0); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
+
+/* 图片全屏预览遮罩 */
+.image-preview-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  cursor: zoom-out;
+  outline: none;
+  padding: 32px;
+}
+.image-preview-img {
+  max-width: min(95vw, 1600px);
+  max-height: 88vh;
+  border-radius: 4px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+  cursor: default;
+  background: #fff;
+}
+.image-preview-caption {
+  margin-top: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+  max-width: 80vw;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.image-preview-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 18px;
+  line-height: 36px;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.image-preview-close:hover { background: rgba(255, 255, 255, 0.28); }
 </style>

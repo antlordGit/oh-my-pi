@@ -41,8 +41,22 @@ export async function getMessages(sessionId: string): Promise<any> {
   return r.data
 }
 
-export async function prompt(sessionId: string, message: string): Promise<void> {
-  await api.post(`/api/sessions/${sessionId}/prompt`, { message })
+/** 与底层 Pi 协议 ImageContent 对齐：base64 编码图片 + MIME */
+export interface ImageContent {
+  data: string
+  mimeType: string
+}
+
+export async function prompt(
+  sessionId: string,
+  message: string,
+  images?: ImageContent[],
+  streamingBehavior?: string,
+): Promise<void> {
+  const body: Record<string, unknown> = { message }
+  if (images && images.length > 0) body.images = images
+  if (streamingBehavior) body.streamingBehavior = streamingBehavior
+  await api.post(`/api/sessions/${sessionId}/prompt`, body)
 }
 
 export async function abort(sessionId: string): Promise<void> {

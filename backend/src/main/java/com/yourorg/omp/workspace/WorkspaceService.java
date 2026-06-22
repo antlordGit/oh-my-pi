@@ -134,8 +134,21 @@ public class WorkspaceService {
     }
 
     private void initGitIfNeeded(Path dir) throws IOException {
-        if (Files.exists(dir.resolve(".git"))) return;
-        runGit(dir, "init", "-b", "main");
+        // 检查 .git 目录是否存在且有至少一个 commit
+        // 空仓库（有 .git 但无 commit）也需要初始化
+        boolean hasCommits = false;
+        if (Files.exists(dir.resolve(".git"))) {
+            try {
+                runGitCapture(dir, "rev-parse", "HEAD");
+                hasCommits = true;
+            } catch (Exception ignored) {
+                log.warn("Git repo at {} has no commits, will initialize", dir);
+            }
+        }
+        if (hasCommits) return;
+        // git init -b main requires Git 2.28+; do init then rename branch for compatibility.
+        runGit(dir, "init");
+        runGit(dir, "branch", "-M", "main");
         runGit(dir, "config", "user.email", GIT_AUTHOR_EMAIL);
         runGit(dir, "config", "user.name", GIT_AUTHOR_NAME);
         runGit(dir, "config", "commit.gpgsign", "false");

@@ -1,7 +1,11 @@
 package com.yourorg.omp.rpc;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.List;
 
 /**
  * Fluent builder helpers for RpcCommand JSON. Keeps call sites tidy and type-safe.
@@ -22,6 +26,27 @@ public final class RpcCommands {
 
     public static ObjectNode prompt(String message, String streamingBehavior) {
         return prompt(message).put("streamingBehavior", streamingBehavior);
+    }
+
+    /**
+     * 带图片附件的 prompt。images 中每个元素需要至少包含 {@code data}（base64）与 {@code mimeType} 字段，
+     * 输出时会附加 {@code type=image} 以对齐 omp-rpc 的 ImageContent。streamingBehavior 可为 null。
+     */
+    public static ObjectNode prompt(String message, List<?> images, String streamingBehavior) {
+        ObjectNode n = prompt(message);
+        if (images != null && !images.isEmpty()) {
+            ArrayNode arr = MAPPER.createArrayNode();
+            for (Object img : images) {
+                if (img == null) continue;
+                JsonNode tree = MAPPER.valueToTree(img);
+                if (!(tree instanceof ObjectNode o)) continue;
+                o.put("type", "image");
+                arr.add(o);
+            }
+            if (arr.size() > 0) n.set("images", arr);
+        }
+        if (streamingBehavior != null) n.put("streamingBehavior", streamingBehavior);
+        return n;
     }
 
     public static ObjectNode steer(String message) {

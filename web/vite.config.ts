@@ -16,7 +16,7 @@ export default defineConfig({
       '/api': 'http://localhost:8080',
       // Proxy only the real backend admin API paths — NOT the SPA route /admin itself.
       // Without this restriction a browser refresh of /admin hits the backend directly.
-      '^/admin/(sessions|config|audit|pool)': 'http://localhost:8080',
+      '^/admin/(sessions|config|audit|pool|maintenance)': 'http://localhost:8080',
       '/ws': {
         target: 'ws://localhost:8080',
         ws: true,

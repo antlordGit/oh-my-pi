@@ -38,12 +38,14 @@ public class AdminController {
     private final ResponseAuditRepository responses;
     private final AuditService audit;
     private final CurrentUser currentUser;
+    private final com.yourorg.omp.maintenance.MaintenanceService maintenance;
 
     public AdminController(AdminConfigService config, UserRepository users, JwtService jwt,
                            SessionMetaRepository sessions, SessionManager sessionManager, ProcessPool pool,
                            PromptAuditRepository prompts, ToolAuditRepository tools,
                            ResponseAuditRepository responses, AuditService audit,
-                           CurrentUser currentUser) {
+                           CurrentUser currentUser,
+                           com.yourorg.omp.maintenance.MaintenanceService maintenance) {
         this.config = config;
         this.users = users;
         this.jwt = jwt;
@@ -55,6 +57,7 @@ public class AdminController {
         this.responses = responses;
         this.audit = audit;
         this.currentUser = currentUser;
+        this.maintenance = maintenance;
     }
 
     // ---- config ----
@@ -287,6 +290,47 @@ public class AdminController {
         return Map.of(
                 "active", pool.activeCount(),
                 "usedSlots", pool.usedSlots()
+        );
+    }
+
+    // ---- maintenance ----
+
+    /** 查询当前维护状态。返回 enabled=false 表示未开启。 */
+    @GetMapping("/maintenance/status")
+    public Map<String, Object> maintenanceStatus() {
+        Map<String, Object> s = maintenance.getStatus();
+        if (s == null) {
+            return Map.of("enabled", false);
+        }
+        return s;
+    }
+
+    /** 开启系统维护模式（7天 TTL）。开启后新会话/新对话等请求将被拒绝。 */
+    @PostMapping("/maintenance/enable")
+    public Map<String, Object> enableMaintenance() {
+        String operator = currentUser.require().getUsername();
+        maintenance.enable(operator);
+        return Map.of(
+                "ok", true,
+                "status", maintenance.getStatus()
+        );
+    }
+
+    /** 解除系统维护模式。 */
+    @PostMapping("/maintenance/disable")
+    public Map<String, Object> disableMaintenance() {
+        maintenance.disable();
+        return Map.of("ok", true);
+    }
+
+    /** 查询当前正在推流的会话列表。用于判断「能否执行服务更新」。 */
+    @GetMapping("/maintenance/streaming-sessions")
+    public Map<String, Object> streamingSessions() {
+        List<Map<String, Object>> items = maintenance.getStreamingSessions();
+        return Map.of(
+                "items", items,
+                "total", items.size(),
+                "canStop", items.isEmpty()
         );
     }
 }

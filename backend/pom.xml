@@ -84,6 +84,17 @@
             <artifactId>reactor-core</artifactId>
         </dependency>
 
+        <!-- Redis（系统维护开关 / 后续可扩展为分布式缓存） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <!-- Lettuce 默认池化需要 commons-pool2 -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+
         <!-- JSONL parsing -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

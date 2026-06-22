@@ -2,6 +2,7 @@ package com.yourorg.omp.rpc;
 
 import com.yourorg.omp.config.OmpProperties;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -73,6 +74,16 @@ public record OmpProcessSpec(
         // the operator (host), not to the user's omp session inside the workspace.
         argv.add("--no-rules");
         argv.add("--no-skills");
+        // RTK (Rust Token Killer) Pi-style extension — rewrites bash commands to `rtk <cmd>`
+        // to save 60-90% tokens. The extension file is dropped into the standard omp
+        // user-extension path by the omp-allinone Docker image's RTK install layer.
+        // Conditional load: skip if the file is absent so dev environments without
+        // RTK still work. See docs/DEPLOY.md §18.4 for image install details.
+        Path rtkExt = Path.of("/root/.omp/agent/extensions/rtk.ts");
+        if (Files.isRegularFile(rtkExt)) {
+            argv.add("--extension");
+            argv.add(rtkExt.toString());
+        }
         // --provider is the provider id from models.yml (e.g. "deepseek"); fallback to "openai" when not set.
         argv.add("--provider");
         argv.add(provider == null || provider.isBlank() ? "openai" : provider);

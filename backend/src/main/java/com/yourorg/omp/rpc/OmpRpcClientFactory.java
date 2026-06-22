@@ -123,18 +123,16 @@ public class OmpRpcClientFactory {
         if (root == null) root = new LinkedHashMap<>();
 
         Map<String, Object> providers = (Map<String, Object>) root.computeIfAbsent("providers", k -> new LinkedHashMap<>());
-        Map<String, Object> providerCfg = (Map<String, Object>) providers.computeIfAbsent(provider, k -> {
-            Map<String, Object> cfg = new LinkedHashMap<>();
-            if (baseUrl != null && !baseUrl.isBlank()) cfg.put("baseUrl", baseUrl);
-            if (api != null && !api.isBlank()) cfg.put("api", api);
-            if (apiKey != null && !apiKey.isBlank()) cfg.put("apiKey", apiKey);
-            return cfg;
-        });
+        Map<String, Object> providerCfg = (Map<String, Object>) providers.computeIfAbsent(provider, k -> new LinkedHashMap<>());
 
-        // 补全 provider 级字段（可能已有记录但不全）
-        if (baseUrl != null && !baseUrl.isBlank()) providerCfg.putIfAbsent("baseUrl", baseUrl);
-        if (api != null && !api.isBlank()) providerCfg.putIfAbsent("api", api);
-        if (apiKey != null && !apiKey.isBlank()) providerCfg.putIfAbsent("apiKey", apiKey);
+        // 用数据库激活配置的真实值覆盖 provider 级连接字段，让 models.yml 始终反映数据库真相。
+        // 这是 OMP 进程启动时 ModelRegistry 一次性加载 apiKey 的唯一可靠注入点：
+        // 进程一旦启动就把 apiKey 固化进 AuthStorage#configOverrides，运行中改文件不会重读。
+        // 所以这里必须 put（覆盖），不能 putIfAbsent——否则 deepseek 这类首版被占位符污染过的
+        // provider 永远换不到真实 key。其它字段（models 列表里的 thinking/compat 等丰富配置）保持不动。
+        if (baseUrl != null && !baseUrl.isBlank()) providerCfg.put("baseUrl", baseUrl);
+        if (api != null && !api.isBlank()) providerCfg.put("api", api);
+        if (apiKey != null && !apiKey.isBlank()) providerCfg.put("apiKey", apiKey);
 
         // 增量添加 model
         List<Map<String, Object>> models = (List<Map<String, Object>>) providerCfg.computeIfAbsent("models", k -> new java.util.ArrayList<>());

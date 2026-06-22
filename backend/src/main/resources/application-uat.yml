@@ -16,28 +16,14 @@ spring:
       max-request-size: 500MB
   codec:
     max-in-memory-size: 50MB
-  # Redis（系统维护开关用，开发环境默认指向本机 6379）
-  data:
-    redis:
-      host: ${OMP_REDIS_HOST:172.17.0.1}
-      port: ${OMP_REDIS_PORT:6379}
-      password: ${OMP_REDIS_PASSWORD:9ww3AHVY*$@d276}
-      database: ${OMP_REDIS_DATABASE:0}
-      timeout: 3000ms
-      lettuce:
-        pool:
-          max-active: 16
-          max-idle: 8
-          min-idle: 0
-          max-wait: 3000ms
 
 # Application config — see OmpProperties
 app:
   omp:
     binary: ${OMP_BIN:/Users/chenzhiwei/bin/omp}
-    workspaces-root: ${OMP_WORKSPACES_ROOT:/tmp/omp/workspaces}
-    agent-root: ${OMP_AGENT_ROOT:/tmp/omp/agent}
-    stderr-log-dir: ${OMP_STDERR_LOG_DIR:/tmp/omp/logs}
+    workspaces-root: ${OMP_WORKSPACES_ROOT:/data/omp/workspaces}
+    agent-root: ${OMP_AGENT_ROOT:/data/omp/agent}
+    stderr-log-dir: ${OMP_STDERR_LOG_DIR:/data/omp/logs}
     pool:
       max-concurrent: 10
       idle-ttl-minutes: 30
@@ -61,6 +47,8 @@ app:
     ide:
       enabled: ${OMP_IDE_ENABLED:true}
       public-base-url: ${OMP_IDE_PUBLIC_BASE_URL:http://localhost:3000}
+      workspaces: ${OMP_IDE_WORKSPACES:/data/docker/volumes/omp-workspaces/_data}
+      aes-key: ${OMP_IDE_AES_KEY:local-dev-ide-aes-key-change-me}
 
 logging:
   level:

@@ -53,7 +53,9 @@ public class SessionController {
     }
 
     public record CreateSessionRequest(String repoId, String title) {}
-    public record PromptRequest(String message, String streamingBehavior) {}
+    /** 与底层 omp-rpc ImageContent 对齐：data 为 base64，mimeType 为 MIME 类型 */
+    public record ImageContent(String data, String mimeType) {}
+    public record PromptRequest(String message, String streamingBehavior, List<ImageContent> images) {}
     public record SwitchRequest(String sessionPath) {}
     public record BranchRequest(String entryId) {}
     public record NewSessionRequest(String parentSession) {}
@@ -113,8 +115,11 @@ public class SessionController {
 
     @PostMapping("/{sessionId}/prompt")
     public Map<String, Object> prompt(@PathVariable String sessionId, @RequestBody PromptRequest req) throws Exception {
-        log.info("[prompt] hit session={} msgLen={} streamingBehavior={}",
-                sessionId, req.message() == null ? 0 : req.message().length(), req.streamingBehavior());
+        int imageCount = req.images() == null ? 0 : req.images().size();
+        log.info("[prompt] hit session={} msgLen={} streamingBehavior={} images={}",
+                sessionId, req.message() == null ? 0 : req.message().length(), req.streamingBehavior(), imageCount);
+        // 图片附件入参校验（数量 / 大小 / MIME 白名单）
+        validateImages(req.images());
         SessionMeta m = require(sessionId);
         log.info("[prompt] session={} meta ok status={}", sessionId, m.getStatus());
         // 磁盘配额检查：超限时拒绝发送
@@ -127,11 +132,9 @@ public class SessionController {
             m.setStatus("active");
         }
         // Audit the prompt itself (audit-pipeline picks up streamed response events).
-        audit.recordPrompt(sessionId, m.getUserId(), m.getTenantId(), req.message(), null);
+        audit.recordPrompt(sessionId, m.getUserId(), m.getTenantId(), req.message(), imagesToAuditJson(req.images()));
         // Fire-and-forget: the response comes over WS, not this REST call.
-        sessions.sendCommand(m, req.streamingBehavior() != null
-                ? RpcCommands.prompt(req.message(), req.streamingBehavior())
-                : RpcCommands.prompt(req.message()));
+        sessions.sendCommand(m, RpcCommands.prompt(req.message(), req.images(), req.streamingBehavior()));
         sessions.touch(sessionId);
         return Map.of("ok", true, "sessionId", sessionId);
     }
@@ -287,5 +290,49 @@ public class SessionController {
         r.put("createdAt", m.getCreatedAt() == null ? null : m.getCreatedAt().toString());
         r.put("lastActiveAt", m.getLastActiveAt() == null ? null : m.getLastActiveAt().toString());
         return r;
+    }
+
+    // ========================================================================
+    // 图片附件入参校验（数量 / 单图大小 / MIME 白名单），服务端兜底防绕过
+    // ========================================================================
+    private static final int MAX_IMAGES = 5;
+    private static final long MAX_IMAGE_BYTES = 5L * 1024L * 1024L;
+    private static final java.util.Set<String> ACCEPT_MIME = java.util.Set.of(
+            "image/png", "image/jpeg", "image/gif", "image/webp");
+    private static final com.fasterxml.jackson.databind.ObjectMapper AUDIT_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
+    private void validateImages(List<ImageContent> images) {
+        if (images == null || images.isEmpty()) return;
+        if (images.size() > MAX_IMAGES) {
+            throw new IllegalArgumentException("单次最多上传 " + MAX_IMAGES + " 张图片");
+        }
+        for (ImageContent img : images) {
+            if (img == null || img.data() == null || img.data().isEmpty()) {
+                throw new IllegalArgumentException("图片数据为空");
+            }
+            if (img.mimeType() == null || !ACCEPT_MIME.contains(img.mimeType())) {
+                throw new IllegalArgumentException("不支持的图片类型：" + img.mimeType());
+            }
+            // base64 长度 → 字节数估算：每 4 个 base64 字符代表 3 字节
+            long approxBytes = (long) img.data().length() * 3L / 4L;
+            if (approxBytes > MAX_IMAGE_BYTES) {
+                throw new IllegalArgumentException("单张图片不能超过 5MB");
+            }
+        }
+    }
+
+    /** 把附件列表转成审计用的 JsonNode；不持久化原图，仅记录元数据。 */
+    private JsonNode imagesToAuditJson(List<ImageContent> images) {
+        if (images == null || images.isEmpty()) return null;
+        com.fasterxml.jackson.databind.node.ArrayNode arr = AUDIT_MAPPER.createArrayNode();
+        for (ImageContent img : images) {
+            if (img == null) continue;
+            com.fasterxml.jackson.databind.node.ObjectNode o = AUDIT_MAPPER.createObjectNode();
+            o.put("mimeType", img.mimeType());
+            o.put("approxBytes", img.data() == null ? 0L : (long) img.data().length() * 3L / 4L);
+            arr.add(o);
+        }
+        return arr;
     }
 }

@@ -123,6 +123,18 @@ public class ProcessPool {
         return e != null && e.client.isAlive();
     }
 
+    /**
+     * Snapshot of session ids that currently hold a live omp process. Used to broadcast
+     * runtime commands (e.g. set_model) to all running sessions without spawning new ones.
+     */
+    public java.util.List<String> activeSessionIds() {
+        java.util.List<String> ids = new java.util.ArrayList<>();
+        for (Map.Entry<String, Entry> e : active.entrySet()) {
+            if (e.getValue().client.isAlive()) ids.add(e.getKey());
+        }
+        return ids;
+    }
+
     public int usedSlots() {
         return props.pool().maxConcurrent() - slots.availablePermits();
     }

@@ -59,6 +59,7 @@ public class SystemService {
     private final AdminConfigService adminConfig;
     private final BCryptPasswordEncoder encoder;
     private final WorkspaceService workspace;
+    private final com.yourorg.omp.session.SessionManager sessions;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SystemService(CurrentUser currentUser,
@@ -71,7 +72,8 @@ public class SystemService {
                          ModelConfigRepository modelConfigs,
                          AdminConfigService adminConfig,
                          BCryptPasswordEncoder encoder,
-                         WorkspaceService workspace) {
+                         WorkspaceService workspace,
+                         com.yourorg.omp.session.SessionManager sessions) {
         this.currentUser = currentUser;
         this.users = users;
         this.tenants = tenants;
@@ -83,6 +85,7 @@ public class SystemService {
         this.adminConfig = adminConfig;
         this.encoder = encoder;
         this.workspace = workspace;
+        this.sessions = sessions;
     }
 
     // ==================== 租户过滤 ====================
@@ -691,13 +694,15 @@ public class SystemService {
         ModelConfigEntity target = modelConfigs.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("模型配置不存在"));
 
-        // 停用所有配置
-        modelConfigs.findAll().forEach(e -> {
+        // 停用所有配置，并记下原激活配置的 provider，用于判断本次是否跨 provider 切换
+        String prevProvider = null;
+        for (ModelConfigEntity e : modelConfigs.findAll()) {
             if (e.isActive()) {
+                prevProvider = e.getProvider();
                 e.setActive(false);
                 modelConfigs.save(e);
             }
-        });
+        }
 
         // 激活目标配置
         target.setActive(true);
@@ -708,6 +713,28 @@ public class SystemService {
         syncActiveToAdminConfig(target);
 
         log.info("ModelConfig activated: id={}, configName={}", id, target.getConfigName());
+
+        // 切换策略，必须区分两种情况(根因：OMP 进程的 ModelRegistry 在启动时一次性加载并固化 apiKey，
+        // 运行中不会重读 models.yml)：
+        //
+        //   1. 同 provider 内换 modelId：进程内已加载该 provider 的所有 model 与 apiKey，set_model
+        //      可当场无缝切换，复刻 CLI /model 体验——进程不重启、对话历史不丢。
+        //
+        //   2. 跨 provider 切换：新 provider 的 apiKey 可能尚未注入进程（如 deepseek 从占位符变真值），
+        //      set_model 即便成功也会用旧凭据请求导致 401。此时必须 evict 所有存活进程，
+        //      下次发消息时以 --resume 重启，从最新的 models.yml 重新加载 apiKey；
+        //      omp 的 session 文件保留完整对话历史，--resume 自动恢复，不会丢上下文。
+        boolean crossProvider = prevProvider != null
+                && target.getProvider() != null
+                && !target.getProvider().equals(prevProvider);
+        if (crossProvider) {
+            log.info("ModelConfig activate: cross-provider switch {} -> {}, evict all live processes",
+                    prevProvider, target.getProvider());
+            sessions.evictAll();
+        } else {
+            sessions.broadcastSetModel(target.getProvider(), target.getModelId());
+        }
+
         return modelConfigToMap(target);
     }
 

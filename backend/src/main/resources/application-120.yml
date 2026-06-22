@@ -1,0 +1,80 @@
+# =============================================================================
+# application-120.yml —— 10.126.2.120 UAT 服务器生产配置（Docker All-in-One）
+# -----------------------------------------------------------------------------
+# ⚠️ 本文件含 120 服务器的真实敏感信息(数据库密码、JWT secret)。
+#   请勿提交到公共仓库。若已误提交,务必从 git 历史中清除并轮换这些凭证。
+# 部署位置:120 服务器 /home/omp/docker-build/prod-application.yml
+# 加载方式:--spring.config.additional-location=file:/app/prod-application.yml
+#         --spring.profiles.active=prod
+# 关联部署 runbook:docs/DEPLOY.md §18（10.126.2.120 UAT 服务器）
+# =============================================================================
+
+server:
+  port: 8080
+
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    # ⚠️ 容器内用宿主 docker0 网关访问 MySQL,不是 127.0.0.1
+    # 容器重建后 docker0 网关不变,但保险起见 host 用 172.17.0.1
+    url: jdbc:mysql://127.0.0.1:3306/omp?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: a5gkwGI$!@Xea
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    type: com.zaxxer.hikari.HikariDataSource
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 2
+      connection-timeout: 10000
+  jpa:
+    hibernate:
+      ddl-auto: none
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        jdbc.time_zone: Asia/Shanghai
+    open-in-view: false
+  flyway:
+    enabled: false    # 数据库表由用户手动创建,后端不自动跑 migration
+  # 容器内 Redis：通过宿主 docker0 网关访问宿主机 Redis 实例（端口 6379）
+  # 若 120 服务器未单独装 Redis，可启动一个 redis 容器并把端口暴露到 172.17.0.1:6379
+  data:
+    redis:
+      host: ${OMP_REDIS_HOST:172.17.0.1}
+      port: ${OMP_REDIS_PORT:6379}
+      password: ${OMP_REDIS_PASSWORD:9ww3AHVY*$@d276}
+      database: ${OMP_REDIS_DATABASE:0}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 0
+          max-wait: 3000ms
+
+app:
+  omp:
+    # 容器内 omp 入口(后端 spawn 时调)
+    binary: /app/omp/scripts/omp-dev.sh
+    # 工作区卷 omp-workspaces 挂载到容器内此路径(与 code-server 同卷同路径)
+    workspaces-root: /data/omp/workspaces
+    agent-root: /data/omp/agent
+    stderr-log-dir: /data/omp/logs
+    # IDE(code-server 5000→9000,容器内是解密代理)
+    ide:
+      enabled: true
+      public-base-url: http://10.126.2.120:5000
+  security:
+    # ⚠️ JWT secret 64 字符随机,每台服务器独立,不要跨机器共用
+    jwt-secret: SmDdzEH5aCIEk/R6XkU/bcHUJJ+cmuSbQ+fKpNEJpHfe75RDvQqMJC686OyjX15J
+    jwt-ttl-hours: 24
+    bootstrap-admin:
+      username: admin
+      password: admin
+
+logging:
+  level:
+    root: WARN
+    com.yourorg.omp: INFO
