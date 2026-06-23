@@ -10,10 +10,8 @@ import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.Yaml;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -30,7 +28,9 @@ import java.util.Map;
  * </ol>
  *
  * <p>Before spawning OMP, the active model from {@code model.active} is
- * written to the user's {@code models.yml} so OMP can find it.
+ * written to global {@code agentRoot/models.yml} so all users share the same
+ * provider/model list. Per-user agentDir gets symlinks pointing to global
+ * shared files (mcp.json, APPEND_SYSTEM.md, models.yml).
  */
 @Component
 public class OmpRpcClientFactory {
@@ -77,22 +77,17 @@ public class OmpRpcClientFactory {
         }
 
         // 同步写入 models.yml，确保 OMP 能找到自定义模型
-        syncModelsYml(agentDir, provider, modelId, baseUrl, api, apiKey);
+        syncModelsYml(props.agentRoot(), provider, modelId, baseUrl, api, apiKey);
 
-        // MCP 配置 + system prompt 模板。
-        // omp 启动时 PI_CODING_AGENT_DIR=agentDir，会自动发现：
-        //   - agentDir/mcp.json    → MCP servers（含 codegraph stdio server）
-        //   - agentDir/APPEND_SYSTEM.md → 追加到每次会话的 system prompt
-        //
-        // mcp.json：统一维护在 agentRoot/mcp.json 共享（运维或 entrypoint 落盘），
-        //   每个用户 agentDir 下建一个 symlink 指向 ../mcp.json。一次维护，全局生效。
-        //   用户级私有 MCP 不支持（symlink 每次 spawn 重建会清掉用户改动）。
-        // APPEND_SYSTEM.md：全局模板 + 用户私有 (.user.md) 合并生成；
-        //   用户私有放在 <agentDir>/APPEND_SYSTEM.user.md，由运维或用户手工创建。
-        // 模板/共享文件缺失时静默跳过，开发机/容器内 omp 进程都能照常启动
-        //   （只是没全局 MCP 或 prompt 注入）。
-        ensureGlobalMcpSymlink(props.agentRoot(), agentDir);
-        // 共享 agent 目录 symlinks：extensions/skills/hooks/tools。
+        // 全局共享配置 symlinks。
+    // agentRoot/{mcp.json,APPEND_SYSTEM.md,models.yml} 由 entrypoint 落盘；
+    // 每个用户的 agentDir 下建 symlink 指向 ../ 同名文件。一处维护，全局生效。
+    // 源文件缺失时静默跳过（开发机未放共享配置时不阻塞 omp 启动）。
+    ensureGlobalSymlink(props.agentRoot(), agentDir, "mcp.json");
+    ensureGlobalSymlink(props.agentRoot(), agentDir, "APPEND_SYSTEM.md");
+    ensureGlobalSymlink(props.agentRoot(), agentDir, "models.yml");
+
+    // 共享 agent 目录 symlinks：extensions/skills/hooks/tools。
         // 指向 /data/omp/agent/{name}/ → 一份运维安装的扩展/技能/钩子/工具，
         // 每个用户通过 PI_CODING_AGENT_DIR 隔离的子目录自动 symlink 共享。
         // 仅当 props.sharedAgentRoot() 配置且对应子目录存在时才建；
@@ -100,12 +95,6 @@ public class OmpRpcClientFactory {
         if (props.sharedAgentRoot() != null) {
             ensureSharedSymlinks(props.sharedAgentRoot(), agentDir);
         }
-        syncAppendSystemMd(
-                props.appendSystemTemplatePath(),
-                agentDir.resolve("APPEND_SYSTEM.user.md"),
-                agentDir.resolve("APPEND_SYSTEM.md")
-        );
-
         // 确保工作区 CodeGraph 索引最新（异步 daemon 线程，不阻塞 omp spawn）。
         // 兜底场景：watcher 在容器重启后失联期间漏掉的 git pull / IDE 外部改动。
         ensureCodeGraphIndexed(workspace);
@@ -135,16 +124,16 @@ public class OmpRpcClientFactory {
     }
 
     /**
-     * 将 model.active 动态同步到用户 models.yml，使 OMP 进程能找到自定义模型。
+     * 将 model.active 动态同步到全局 models.yml，使 OMP 进程能找到自定义模型。
      * 只做增量合并：如果同名 provider 已存在且有相同 model id，跳过。
-     * 其他已有内容保持不动。
+     * 其他已有内容保持不动。synchronized 防止多用户并发 spawn 时写破文件。
      */
     @SuppressWarnings("unchecked")
-    private void syncModelsYml(Path agentDir, String provider, String modelId,
+    private synchronized void syncModelsYml(Path agentRoot, String provider, String modelId,
                                 String baseUrl, String api, String apiKey) {
         if (provider == null || provider.isBlank() || modelId == null || modelId.isBlank()) return;
-        // 写到全局 agentRoot 下的 models.yml，所有用户共享
-        Path dest = agentDir.resolve("models.yml");
+        // 写到 agentRoot 下的 models.yml，所有用户共享
+        Path dest = agentRoot.resolve("models.yml");
         Yaml yaml = buildYaml();
 
         // 读取已有配置
@@ -189,7 +178,7 @@ public class OmpRpcClientFactory {
 
         // 写回文件
         try {
-            Files.createDirectories(agentDir);
+            Files.createDirectories(agentRoot);
             Files.writeString(dest, yaml.dump(root));
         } catch (IOException e) {
             // 写入失败不要阻塞启动——让 omp 自带报错兜底
@@ -205,32 +194,31 @@ public class OmpRpcClientFactory {
     }
 
     /**
-     * 确保用户 agentDir 下有指向共享 mcp.json 的 symlink。
-     * 静默兜底：
-     * 1. agentRoot/mcp.json 不存在 → 跳过（开发机未放共享配置时不阻塞 omp 启动）
-     * 2. 目录/symlink 操作失败 → 不抛，避免拖垮 spawn 主流程（omp 退化为不带 MCP 的工具集）
+     * Ensure a symlink in agentDir pointing to the global file in agentRoot.
+     * If the shared source does not exist, silently skip (don't block startup
+     * on dev machines without shared config).
      */
-    private static void ensureGlobalMcpSymlink(Path agentRoot, Path agentDir) {
-        Path sharedMcp = agentRoot.resolve("mcp.json");
-        if (!Files.isRegularFile(sharedMcp)) return;
+    private static void ensureGlobalSymlink(Path agentRoot, Path agentDir, String filename) {
+        Path shared = agentRoot.resolve(filename);
+        if (!Files.isRegularFile(shared)) return;
 
         try {
             Files.createDirectories(agentDir);
-            Path userMcp = agentDir.resolve("mcp.json");
+            Path userLink = agentDir.resolve(filename);
 
             // 如果已经是正确 symlink，不用重建
-            if (Files.isSymbolicLink(userMcp)) {
-                Path target = Files.readSymbolicLink(userMcp);
-                if (Path.of("../mcp.json").equals(target)) return;
+            if (Files.isSymbolicLink(userLink)) {
+                Path target = Files.readSymbolicLink(userLink);
+                if (Path.of("../" + filename).equals(target)) return;
             }
 
-            // 旧文件/旧链接 → 删除重建
-            Files.deleteIfExists(userMcp);
+            // 旧文件 / 旧链接 → 删除重建
+            Files.deleteIfExists(userLink);
 
-            // 创建相对路径 symlink: 从 userMcp 的父目录(agentDir) 指向 ../mcp.json
-            Files.createSymbolicLink(userMcp, Path.of("../mcp.json"));
+            // 创建相对路径 symlink: 从 agentDir 的父目录指向 agentRoot 下的文件
+            Files.createSymbolicLink(userLink, Path.of("../" + filename));
         } catch (IOException ignore) {
-            // 任何 IO 异常都跳过（Windows 不支持 symlink/权限不够/...）
+            // 任何 IO 异常都跳过（Windows 不支持 symlink / 权限不够 / ...）
         }
     }
 
@@ -239,7 +227,7 @@ public class OmpRpcClientFactory {
      *
      * <p>让每个用户的 omp 子进程（PI_CODING_AGENT_DIR=agentDir）自动发现
      * 运维统一安装在 {@code sharedAgentRoot} 下的扩展/技能/钩子/工具，
-     * 同时保留 user 级别的 mcp.json / APPEND_SYSTEM.md / models.yml / sessions/ 隔离。
+     * 同时保留 user 级别的 agent.db / models.db / sessions/ / blobs/ 隔离。
      *
      * <p>共享子目录清单：extensions / skills / hooks / tools。
      * 任意一个子目录在 sharedAgentRoot 下不存在 → 跳过（不创建空 symlink 误导 omp）。
@@ -252,7 +240,7 @@ public class OmpRpcClientFactory {
      *   </pre>
      *
      * <p>静默兜底：任何 IO 异常都跳过（Windows / 权限 / 不存在等），
-     * 与 {@link #ensureGlobalMcpSymlink} 同一容错策略。
+     * 与 {@link #ensureGlobalSymlink} 同一容错策略。
      */
     private static void ensureSharedSymlinks(Path sharedAgentRoot, Path agentDir) {
         String[] sharedSubdirs = {"extensions", "skills", "hooks", "tools"};
@@ -281,44 +269,6 @@ public class OmpRpcClientFactory {
         } catch (IOException ignore) {
             // 任意 IO 异常跳过：Windows 不支持 symlink、权限不够、磁盘满等
         }
-    }
-
-    /**
-     * 合并全局 APPEND_SYSTEM 模板与用户私有覆盖到 omp 实际读取的 APPEND_SYSTEM.md。
-     * 合并规则（按存在性矩阵）：
-     *   - 仅全局：写入全局内容
-     *   - 仅用户：写入用户内容
-     *   - 都有：  全局 + "\n\n---\n\n" + 用户
-     *   - 都无：  删除已生成的 target（保持 omp 无 append prompt 的纯净状态）
-     * 异常静默兜底：读写失败时不阻塞 spawn，omp 退化为无 system prompt 追加。
-     */
-    private static void syncAppendSystemMd(Path templatePath, Path userOverride, Path target) {
-        try {
-            String global = readIfRegular(templatePath);
-            String user = readIfRegular(userOverride);
-            String merged;
-            if (global != null && user != null) {
-                merged = global.stripTrailing() + "\n\n---\n\n" + user.stripLeading();
-            } else if (global != null) {
-                merged = global;
-            } else if (user != null) {
-                merged = user;
-            } else {
-                // 两个源都不存在 → 清掉旧的生成文件，避免历史残留影响 omp
-                Files.deleteIfExists(target);
-                return;
-            }
-            Files.createDirectories(target.getParent());
-            Files.writeString(target, merged, StandardCharsets.UTF_8);
-        } catch (IOException ignore) {
-            // 合并失败不阻塞 omp 启动
-        }
-    }
-
-    /** 读 regular file 内容，文件不存在或非 regular 返回 null。IO 异常上抛。 */
-    private static String readIfRegular(Path p) throws IOException {
-        if (p == null || !Files.isRegularFile(p)) return null;
-        return Files.readString(p, StandardCharsets.UTF_8);
     }
 
     /**

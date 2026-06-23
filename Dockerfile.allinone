@@ -1,0 +1,40 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# Dockerfile —— 业务层镜像
+# ----------------------------------------------------------------------------
+# 基于 omp-allinone-base:latest，只 COPY 业务产物（jar / dist / h5 / omp / nginx）。
+# base 镜像缓存命中后，本镜像 < 30s 构建完毕。
+#
+# 构建：
+#   # 一次性：构建 base
+#   docker build -f Dockerfile.base -t omp-allinone-base:latest .
+#   # 每次发版：构建业务镜像
+#   docker build -t omp-allinone:latest .
+#
+# 端口：
+#   - 80    → nginx（前端 / API / WS）
+#   - 8080  → java 后端（容器内，可直接调试）
+#   - 8888  → H5 / 移动端静态站点
+# ============================================================================
+
+FROM omp-allinone-base:latest
+
+# 业务产物（PC 端 + 后端 + 移动端 + omp 源码）
+WORKDIR /app
+COPY omp-backend-0.1.0.jar /app/omp-backend-0.1.0.jar
+COPY dist /app/dist
+COPY h5 /app/h5
+COPY omp /app/omp
+COPY backend/src/main/resources/application-120.yml /app/prod-application.yml
+COPY omp-dev.sh /app/omp/scripts/omp-dev.sh
+RUN chmod +x /app/omp/scripts/omp-dev.sh
+
+# nginx 配置（PC 主配置 + H5 独立 server 块）
+COPY nginx/ /etc/nginx/
+
+# 启动脚本
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 80 8080 8888
+ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]

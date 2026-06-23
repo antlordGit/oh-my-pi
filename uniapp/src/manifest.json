@@ -65,7 +65,7 @@
     "title": "OMP 工作站",
     "router": {
       "mode": "history",
-      "base": "/"
+      "base": "/h5/"
     },
     "devServer": {
       "https": false,

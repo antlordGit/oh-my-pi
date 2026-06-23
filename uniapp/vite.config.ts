@@ -8,6 +8,10 @@ import path from 'node:path'
 // - 路径别名 @ 指向 src/，与 H5 工程保持一致
 // - sass 通过 additionalData 自动注入设计令牌，所有 <style lang="scss"> 内可直接使用变量
 export default defineConfig({
+  // H5 部署到 /h5/ 子路径（生产环境由 nginx serve /app/h5）。
+  // 仅对 H5 生效；小程序/App 不走 base，构建产物结构不一样。
+  // #ifdef H5（vite 自身不识别 ifdef，但 uni-app build:h5 会注入 UNI_PLATFORM=h5）
+  base: process.env.UNI_PLATFORM === 'h5' ? '/h5/' : '/',
   plugins: [uni()],
   resolve: {
     alias: {

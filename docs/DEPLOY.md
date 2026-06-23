@@ -18,7 +18,10 @@
 | **`omp-source.tar.gz`**（工程 + node_modules） | `tar -czf /tmp/omp-source.tar.gz --exclude='.git' --exclude='target' --exclude='crates/*/target' .`，在工程根目录运行 | §7 |
 | **`pi_natives.linux-x64-baseline.node`**（原生模块） | 本地交叉编译（zig + rustup），或用已经编好的那份 | §4 |
 | **`omp-backend-0.1.0.jar`**（后端 fat-jar） | `cd backend && mvn -DskipTests package` | §6 |
-| **`web/dist/`**（前端静态产物） | `cd web && bun run build` | §5 |
+| **`web/dist/`**（PC 前端静态产物） | `cd web && bun run build` | §5 |
+| **`uniapp/dist/build/h5/`**（H5 移动端静态产物） | `cd uniapp && yarn build:h5` | §5 |
+
+> 容器化部署（120 / UAT 形态）见 §18 ~ §19；新服务器全新部署仍可参考 §7、§17 速查清单。
 
 **本地如何一键生成所有 4 个产物（已验证可执行）：**
 
@@ -720,19 +723,24 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 | Java | OpenJDK 21.0.9（打进 all-in-one 镜像） |
 | bun | 1.3.14（打进 all-in-one 镜像） |
 | 数据库 | MySQL 8（容器外，宿主机 127.0.0.1:3306，库名 `omp`，user `root`） |
+| Redis | 单独容器或宿主机实例，容器内用 `172.17.0.1:6379` 访问（系统维护开关用） |
 | code-server | v4.124.2（codercom/code-server:latest，独立容器） |
-| 部署形态 | **omp-app**（前端+后端+omp 三合一）+ **code-server**（独立容器） |
+| 镜像分层 | **omp-allinone-base**（环境层，不常改）+ **omp-allinone**（业务层，每次发版重建）见 §18.4 |
+| 部署形态 | **omp-app**（前端 PC + H5 + 后端 + omp）+ **code-server**（独立容器） |
 
 ### 18.2 服务地址
 
 | 服务 | 地址 | 来源 |
 |---|---|---|
-| 前端 | http://10.126.2.120:8000/ | omp-app 容器（nginx 80 → 宿主 8000） |
-| 后端 API | http://10.126.2.120:8080 | omp-app 容器 |
+| PC 前端 | http://10.126.2.120:8000/ | omp-app 容器（nginx 80 → 宿主 8000） |
+| **H5 移动端** | **http://10.126.2.120:8000/h5/** | omp-app 容器（nginx alias `/app/h5/`） |
+| 后端 API | http://10.126.2.120:8080 (直连) 或 http://10.126.2.120:8000/api/ (经 nginx) | omp-app 容器 |
+| **业务工程反代** | http://10.126.2.120:8888/<前缀>/ | omp-app 容器 nginx 8888 端口（详见 §18.4.1） |
 | code-server | http://10.126.2.120:5000/ | code-server 独立容器（8080 → 宿主 5000） |
 | MySQL | 172.17.0.1:3306（容器内）/ 宿主 3306 | 宿主机已有的 MySQL 8 实例 |
+| Redis | 172.17.0.1:6379（容器内）/ 宿主 6379 | 系统维护开关存储 |
 
-容器内访问 MySQL 用宿主 docker0 网关 `172.17.0.1`，不能用 127.0.0.1。
+容器内访问 MySQL / Redis 用宿主 docker0 网关 `172.17.0.1`，不能用 127.0.0.1。
 
 ### 18.3 Docker 卷（数据持久化）
 
@@ -747,225 +755,61 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 > `/data/omp/workspaces`。后端 IDE 按钮生成的 URL 是 `?folder=/data/omp/workspaces/<user>/<repo>`（绝对路径），
 > code-server 容器内必须存在同名路径，否则报 "Workspace does not exist"。
 
-### 18.4 omp-app 容器（all-in-one：前端 + 后端 + omp）
+### 18.4 omp-app 容器（all-in-one：PC + H5 + 后端 + omp）
+
+> ⚠️ **镜像分层架构**：自 2026-06-23 起，all-in-one 改为分层构建（base + 业务）。
+> Dockerfile 在工程仓库根目录维护：[`Dockerfile.allinone.base`](../Dockerfile.allinone.base) +
+> [`Dockerfile.allinone`](../Dockerfile.allinone)。完整说明见
+> [`Dockerfile.allinone.md`](../Dockerfile.allinone.md)。
+>
+> | 镜像 | 角色 | 变更频率 |
+> |---|---|---|
+> | `omp-allinone-base:latest` | 环境层：jdk/bun/maven/rust/go/node/python/codegraph/rtk | 加新工具/升级版本时才重建（~5-10 min） |
+> | `omp-allinone:latest` | 业务层：jar + dist + h5 + omp + nginx 配置 | 每次发版重建（10-30 s，base 缓存命中） |
+>
+> **不要**在 120 服务器上直接 vim 改 Dockerfile —— 改本地仓库后 rsync。
 
 **构建上下文** `/home/omp/docker-build/`：
 
 ```
 /home/omp/docker-build/
-├── Dockerfile
-├── entrypoint.sh              # nginx + java，容器启动脚本
-├── nginx/                     # 容器内 nginx 整套配置（详见 18.4.1）
-│   ├── nginx.conf             #   顶层：只负责调度
+├── Dockerfile.base               # 同步自仓库 Dockerfile.allinone.base（环境层）
+├── Dockerfile                    # 同步自仓库 Dockerfile.allinone（业务层）
+├── entrypoint.sh                 # nginx + java，容器启动脚本
+├── nginx/                        # 容器内 nginx 整套配置（详见 18.4.1）
+│   ├── nginx.conf                #   顶层：只负责调度
 │   └── conf.d/
-│       ├── omp-main.conf             #   本工程主 location（前端 + 后端）
-│       └── omp-services-locations.conf  # 业务工程 location 片段（热加载）
-├── omp-dev.sh                 # 容器内 omp 入口（被后端 spawn）
-├── prod-application.yml       # 生产配置（DB / IDE / JWT）
-├── maven-settings.xml         # Maven 镜像（脱敏，路径替换为容器内路径，参考 §19.7）
-├── mcp.json                    # CodeGraph MCP 配置（共享，entrypoint cp 到 agentRoot，参考 §20.8）
-├── APPEND_SYSTEM.md            # CodeGraph 使用引导 system prompt（Java 端按用户 cp 到 agentDir/，参考 §20.8）
-├── jdk21/                     # JDK 21（打进镜像）
-├── bun                        # bun 二进制（打进镜像）
-├── omp-backend-0.1.0.jar      # 后端 fat-jar
-├── dist/                      # 前端静态产物
-├── omp/                       # omp 源码 + node_modules + linux .node
-└── （CodeGraph 由 Dockerfile 内 npm install -g 安装，依赖上层 Node 22 LTS）
+│       ├── omp-main.conf                #   本工程主 location（PC 前端 + H5 + 后端）
+│       ├── omp-h5.conf                  #   8888 业务工程反代（独立 server 块）
+│       └── omp-services-locations.conf  #   80 端口下业务 location 片段（include 进 omp-main）
+├── omp-dev.sh                    # 容器内 omp 入口（被后端 spawn）
+├── prod-application.yml          # 生产配置（DB / Redis / IDE / JWT）
+├── maven-settings.xml            # Maven 镜像（脱敏，路径替换为容器内路径，参考 §19.7）
+├── mcp.json                       # CodeGraph MCP 配置（entrypoint cp 到 agentRoot，参考 §20.8）
+├── APPEND_SYSTEM.md               # CodeGraph 使用引导 system prompt（entrypoint cp 到 agentRoot，参考 §20.8）
+├── models.yml                     # provider/model 模板（apiKey 留空，运行时由 Java 注入，参考 §20.8）
+├── codegraph-linux-x64.tar.gz    # CodeGraph 二进制 tarball（避免容器内拉 GitHub 超时）
+├── jdk21/                        # JDK 21（打进 base 镜像）
+├── bun                           # bun 二进制（打进 base 镜像）
+├── omp-backend-0.1.0.jar         # 后端 fat-jar
+├── dist/                         # PC 端前端静态产物（web/dist）
+├── h5/                           # H5 移动端静态产物（uniapp/dist/build/h5），nginx 在 /h5/ 子路径 serve
+└── omp/                          # omp 源码 + node_modules + linux .node
 ```
 
-**Dockerfile**：
+**端口**：
 
-```dockerfile
-FROM ubuntu:22.04
+| 端口 | 用途 | 宿主映射 |
+|---|---|---|
+| 80 | nginx：PC 前端 + H5 (`/h5/`) + API 反代 | `-p 8000:80` |
+| 8080 | Java 后端（直连/调试） | `-p 8080:8080` |
+| 8888 | 业务工程反代（omp-h5.conf 监听） | `-p 8888:8888` |
 
-# 装运行时依赖: nginx(前端) + git(workspace) + ca-certificates + tini(进程管理)
-RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.tencentyun.com|g; s|http://security.ubuntu.com|http://mirrors.tencentyun.com|g' /etc/apt/sources.list && \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      nginx git ca-certificates tini curl && \
-    rm -rf /var/lib/apt/lists/*
+**Dockerfile**：见仓库根目录的 [`Dockerfile.allinone.base`](../Dockerfile.allinone.base) 和 [`Dockerfile.allinone`](../Dockerfile.allinone)。具体设计与构建命令在 [`Dockerfile.allinone.md`](../Dockerfile.allinone.md)。
 
-# JDK 21
-COPY jdk21 /usr/local/jdk21
-ENV PATH=/usr/local/jdk21/bin:/usr/local/bin:$PATH
-
-# bun
-COPY bun /usr/local/bin/bun
-RUN chmod +x /usr/local/bin/bun
-
-# ============================================================================
-# oh-my-pi CLI 安装 —— 共享 /data/omp/agent/ 配置 + 生态扩展能力
-# ----------------------------------------------------------------------------
-# 目标：
-#   1) 容器内可直接用 `omp` 命令（plugin install / skill add / 等生态命令）
-#   2) Java 后端继续通过 /app/omp/scripts/omp-dev.sh 跑源码，
-#      与安装的 omp 共享同一套 /data/omp/agent/ 下的 extensions/skills/hooks/tools
-#   3) entrypoint.sh 在 /root/.omp/agent 上建 symlink → /data/omp/agent，
-#      Java spawn 时为每个用户建 extensions/skills/hooks/tools 子 symlink
-#
-# 安装源：官方脚本 https://omp.sh/install（GitHub 国内走 gh-proxy 中转）。
-# 安装失败时镜像构建会失败（fail-fast），便于 CI 第一时间发现。
-# 升级：install 脚本自动拉最新 stable；想钉版本可改 URL。
-# ============================================================================
-RUN curl -fsSL "https://gh-proxy.com/https://omp.sh/install" -o /tmp/omp-install.sh \
-    && sh /tmp/omp-install.sh \
-    && rm /tmp/omp-install.sh \
-    && omp --version
-
-# Maven 3.9.9 —— Java 后端容器内构建（tarball 安装，~15 MB；不走 apt 避免拖 openjdk 依赖）。
-# 版本与 DEPLOY.md §2.1 本地构建要求对齐（"Maven ≥ 3.9"）；apt 仓库的 3.6.3 不满足。
-ARG MAVEN_VERSION=3.9.9
-RUN curl -fsSL "https://gh-proxy.com/https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
-      -o /tmp/maven.tar.gz \
-    && tar -xzf /tmp/maven.tar.gz -C /usr/local/ \
-    && mv /usr/local/apache-maven-${MAVEN_VERSION} /usr/local/maven \
-    && rm /tmp/maven.tar.gz \
-    && /usr/local/maven/bin/mvn --version
-
-ENV MAVEN_HOME=/usr/local/maven
-ENV PATH=/usr/local/maven/bin:/usr/local/jdk21/bin:/usr/local/bin:$PATH
-
-# Maven 全局 settings（aliyun 镜像 + 本地仓库 /data/omp/maven-repository）。
-# 容器启动时由 entrypoint.sh cp 到 /root/.m2/settings.xml。
-COPY maven-settings.xml /etc/omp/maven-settings.xml
-
-# CodeGraph MCP 配置 + system prompt 模板（参考 §20.8）。
-# entrypoint.sh 启动时复制到 /data/omp/agent/mcp.json（共享，所有用户用同一份）。
-# Java 端 OmpRpcClientFactory.spawn() 为每个用户创建 symlink 指向 ../mcp.json。
-# 注意：CodeGraph CLI 自身的安装下移到 Node 22 装好之后（走 npm 国内镜像，见下方）。
-COPY mcp.json /etc/omp/mcp.json
-COPY APPEND_SYSTEM.md /etc/omp/APPEND_SYSTEM.md
-
-# RTK (Rust Token Killer) —— 压缩 LLM agent 调 shell 时的输出，60-90% token 节省。
-# 装 musl 静态二进制（不挑 libc，无运行时依赖）。固定版本以保证可复现，
-# 升级见 https://github.com/rtk-ai/rtk/releases。
-ARG RTK_VERSION=v0.42.4
-RUN curl -fsSL "https://gh-proxy.com/https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" \
-      -o /tmp/rtk.tar.gz \
-    && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin/ rtk \
-    && chmod +x /usr/local/bin/rtk \
-    && rm /tmp/rtk.tar.gz \
-    && rtk --version
-
-# RTK Pi-style 扩展安装到 omp 认的用户扩展目录。`rtk init --agent pi` 会把扩展
-# 写到 ~/.pi/agent/extensions/rtk.ts（Pi 上游约定），但 omp 原生只扫描
-# ~/.omp/agent/extensions/，所以拷一份到那里。后端 spawn omp 时还会显式传
-# --extension 指向这个绝对路径（见 OmpProcessSpec.toArgv），双保险。
-RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.pi/agent/extensions/rtk.ts /root/.omp/agent/extensions/rtk.ts
-
-# rtk-proxy hook —— 在 omp 的 Bash 工具执行前自动把命令喂给 `rtk rewrite`，
-# 对能改写的子命令（git、cargo、docker、gh、…）前置加 `rtk`，节省 60-90% token；
-# 不匹配的子命令（echo、cd、ssh…）原样放行。
-# 需 omp 源码具备 ToolCallEventResult.updatedInput 扩展（当前 dev 分支已合入）。
-# 后端 spawn omp 时按 OmpProcessSpec.toArgv 的 Files.isRegularFile 条件加载，
-# 文件缺失就跳过 —— dev 环境无该文件也能跑（fallback 到上面 RTK extension）。
-RUN mkdir -p /root/.omp/hooks \
-    && curl -fsSL "https://raw.githubusercontent.com/<your-org>/<your-repo>/main/backend/src/main/resources/hooks/rtk-proxy.ts" \
-         -o /root/.omp/hooks/rtk-proxy.ts \
-    && chmod 0644 /root/.omp/hooks/rtk-proxy.ts
-
-# ============================================================================
-# 多语言开发环境（开发容器用）
-# ----------------------------------------------------------------------------
-# 装 Node 22 / Python 3 / uv / Go 1.23 / Rust stable，便于在容器内直接开发
-# 各种语言的服务。所有源走镜像加速（国内服务器拉取稳定）。
-# 版本与增量：
-#   - Node 22 LTS    +~120 MB（NodeSource 仓库）
-#   - Python 3.10+   +~150 MB（Ubuntu apt + pip + venv）
-#   - uv             +~30 MB（astral-sh 静态二进制）
-#   - Go 1.23        +~700 MB（官方 tarball）
-#   - Rust stable    +~1.2 GB（rustup 含 cargo + rustc）
-#   - Maven 3.9.9    +~15 MB（官方 tarball，dev-only）
-#   - CodeGraph       +~90 MB（npm global install，带 bundled Node + SQLite 运行时）
-# 合计：镜像增加约 2.3 GB。生产实例不需要这些，dev-only。
-# ============================================================================
-ARG GO_VERSION=1.23.4
-ARG UV_VERSION=0.11.23
-
-# Node 22 LTS（官方 tarball，可控版本。NodeSource 仓库国内不友好，弃用）
-ARG NODE_VERSION=22.11.0
-RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
-      -o /tmp/node.tar.gz \
-    && tar -C /usr/local -xzf /tmp/node.tar.gz --strip-components=1 \
-    && rm /tmp/node.tar.gz \
-    && node --version && npm --version
-
-# CodeGraph —— 代码智能知识图（编译期符号图 + 调用边 + 依赖，一次 codegraph_explore
-# 替代多次 grep/glob/Read）。每个 omp agent 会话通过 §20.8 模板自动接入 MCP。
-#
-# 历史踩坑（详见 §20.8.1）：
-#   - `curl install.sh | sh` 直连 GitHub raw 国内 SSL_read EOF / gh-proxy 522 不稳定
-#   - 预下载 tarball + COPY 体积大、升级要 scp 50 MB
-# 当前方案：走 npmmirror.com 装 npm 包，依赖前面装好的 Node 22。
-# 版本锁定在 1.0.1，升级时改 ARG 即可，**不需要** scp 任何文件到 docker-build。
-ARG CODEGRAPH_VERSION=1.0.1
-RUN npm config set registry https://registry.npmmirror.com \
-    && npm install -g @colbymchenry/codegraph@${CODEGRAPH_VERSION} \
-    && codegraph --version
-
-# Python 3 + pip + venv（Ubuntu 22.04 自带 3.10，腾讯云 apt 镜像源已在上面配好）
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
-    && rm -rf /var/lib/apt/lists/* \
-    && python3 --version && pip3 --version
-
-# uv（Python 极速包管理器，astral-sh 静态二进制）
-# uv tarball 顶层是 uv-<triple>/ 目录，需要 --strip-components=1
-RUN curl -fsSL "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
-      -o /tmp/uv.tar.gz \
-    && tar -xzf /tmp/uv.tar.gz -C /usr/local/bin/ --strip-components=1 \
-    && rm /tmp/uv.tar.gz \
-    && uv --version
-
-# Go 1.23（官方 tarball，控制版本）
-RUN curl -fsSL "https://gh-proxy.com/https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
-      -o /tmp/go.tar.gz \
-    && tar -C /usr/local -xzf /tmp/go.tar.gz \
-    && rm /tmp/go.tar.gz \
-    && /usr/local/go/bin/go version
-
-ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
-
-# Rust stable（rustup，装到 /root/.cargo/bin，并加到 PATH）
-RUN curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs \
-      | sh -s -- -y --default-toolchain stable --profile minimal \
-    && echo 'source $HOME/.cargo/env' >> /root/.bashrc
-
-ENV PATH=/root/.cargo/bin:$PATH
-ENV CARGO_HOME=/root/.cargo RUSTUP_HOME=/root/.rustup
-
-# 核心开发工具:
-#   vim            —— 容器内编辑(改 nginx conf、查日志改文件等)
-#   jq             —— JSON 解析(看 API 响应/日志)
-#   build-essential—— gcc/g++/make,Rust cargo build / Python pip 装 C 扩展 / Go cgo 都需要
-#   net-tools      —— netstat 等网络/端口诊断(配合 iproute2 的 ss)
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-         vim jq build-essential net-tools \
-    && rm -rf /var/lib/apt/lists/*
-
-# 应用产物
-WORKDIR /app
-COPY omp-backend-0.1.0.jar /app/omp-backend-0.1.0.jar
-COPY dist /app/dist
-COPY omp /app/omp
-COPY prod-application.yml /app/prod-application.yml
-COPY omp-dev.sh /app/omp/scripts/omp-dev.sh
-RUN chmod +x /app/omp/scripts/omp-dev.sh
-
-# nginx 配置
-COPY nginx/ /etc/nginx/
-# 顶层 nginx.conf 在 /etc/nginx/nginx.conf
-# 本工程主 location 在 /etc/nginx/conf.d/omp-main.conf
-# 业务工程 location 片段在 /etc/nginx/conf.d/omp-services-locations.conf
-
-# 启动脚本
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-EXPOSE 80 8080
-ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
-```
+> ⚠️ 文档曾内联完整 Dockerfile（已废弃，避免双源）。改 Dockerfile 请改仓库里的两个文件，
+> 然后 `rsync -az Dockerfile.allinone.base $SERVER:/home/omp/docker-build/Dockerfile.base`
+> 和 `rsync -az Dockerfile.allinone $SERVER:/home/omp/docker-build/Dockerfile`，再触发重建。
 
 **entrypoint.sh**：
 
@@ -1016,19 +860,16 @@ mkdir -p /root/.m2
 cp /etc/omp/maven-settings.xml /root/.m2/settings.xml
 echo "[entrypoint] Maven $(/usr/local/maven/bin/mvn --version 2>&1 | head -1)"
 
-# 部署共享 MCP 配置（所有 omp 会话共用）
-# Java 端在 spawn 时为每个用户创建 symlink 指向此文件
-if [ -f /etc/omp/mcp.json ]; then
-  cp /etc/omp/mcp.json /data/omp/agent/mcp.json
-  echo "[entrypoint] MCP config → /data/omp/agent/mcp.json"
-fi
-
-# 部署共享 APPEND_SYSTEM 模板（运维级 system prompt 注入）。
-# Java 端在 spawn 时合并模板 + 用户私有 → /data/omp/agent/{user}/APPEND_SYSTEM.md。
-if [ -f /etc/omp/APPEND_SYSTEM.md ]; then
-  cp /etc/omp/APPEND_SYSTEM.md /data/omp/agent/APPEND_SYSTEM.template.md
-  echo "[entrypoint] APPEND_SYSTEM template → /data/omp/agent/APPEND_SYSTEM.template.md"
-fi
+# 部署全局共享配置（mcp.json / APPEND_SYSTEM.md / models.yml）
+# 镜像内 /etc/omp/ 为全局模板；首次启动时复制到 volume 持久化层 /data/omp/agent/
+# 复用 maven-settings cp 的 cp -n 形式：不覆盖运维手动改过的版本
+mkdir -p /data/omp/agent
+for f in mcp.json APPEND_SYSTEM.md models.yml; do
+  if [ -f "/etc/omp/$f" ] && [ ! -f "/data/omp/agent/$f" ]; then
+    cp "/etc/omp/$f" "/data/omp/agent/$f"
+    echo "[entrypoint] $f → /data/omp/agent/$f"
+  fi
+done
 
 # omp CLI 自检（来自安装脚本）
 echo "[entrypoint] omp $(omp --version 2>&1 | head -1)"
@@ -1074,6 +915,21 @@ spring:
       ddl-auto: none
   flyway:
     enabled: false    # 表手动创建，不跑 migration
+
+  # ⚠️ Redis（系统维护开关存储 — 详见 docs/MAINTENANCE.md）
+  data:
+    redis:
+      host: ${OMP_REDIS_HOST:172.17.0.1}
+      port: ${OMP_REDIS_PORT:6379}
+      password: ${OMP_REDIS_PASSWORD:<redis-password>}
+      database: ${OMP_REDIS_DATABASE:0}
+      timeout: 3000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 0
+          max-wait: 3000ms
 
 app:
   omp:
@@ -1203,13 +1059,16 @@ docker volume create omp-agent
 docker volume create omp-logs
 docker volume create omp-maven
 
-# 2) 构建镜像
+# 2) 构建 base 镜像（首次 5-10 min；后续仅在升级环境时重建）
 cd /home/omp/docker-build
+docker build -f Dockerfile.base -t omp-allinone-base:latest .
+
+# 3) 构建业务镜像（10-30 s，base 缓存命中）
 docker build -t omp-allinone:latest .
 
-# 3) 启动容器
+# 4) 启动容器（注意 3 个端口映射）
 docker run -d --restart unless-stopped --name omp-app \
-  -p 8000:80 -p 8080:8080 \
+  -p 8000:80 -p 8080:8080 -p 8888:8888 \
   -v omp-workspaces:/data/omp/workspaces \
   -v omp-agent:/data/omp/agent \
   -v omp-logs:/data/omp/logs \
@@ -1251,6 +1110,9 @@ docker run -d --restart unless-stopped --name code-server \
 | 前端浏览器缓存旧版导致页面混乱 | rsync `--delete` 清空旧文件 + 用户 Cmd+Shift+R |
 | nginx `rewrite or internal redirection cycle` | SSH heredoc 多层转义把 `$uri` 写成 `\$uri` 字面量；改用 `scp` 上传 nginx.conf |
 | 容器连不上 MySQL | 容器内 127.0.0.1 是容器自己 → 改用 `172.17.0.1` 宿主网关 |
+| `rustup` 从 sh.rustup.rs 下载超时 5+ 分钟 | base 镜像里改用清华镜像 `RUSTUP_DIST_SERVER=mirrors.tuna.tsinghua.edu.cn/rustup` + 容错回退 |
+| `Unable to connect to Redis` | 容器内访问宿主 Redis 用 `172.17.0.1:6379`，prod-application.yml 配置 `spring.data.redis.host` |
+| H5 移动端访问混乱 | 部署到 `/h5/` 子路径 + uniapp `router.base=/h5/` + `vite base=/h5/`（不抢 8888 端口） |
 
 ---
 
@@ -1260,16 +1122,19 @@ docker run -d --restart unless-stopped --name code-server \
 
 | 改动 | 操作 |
 |---|---|
-| Java 代码（`backend/src/`） | 本地 `mvn package` → rsync jar → 重建 omp-allinone 镜像 → 重启 omp-app |
-| Java 代码（`backend/src/`，**容器内调试**） | 容器内 `cd /app/backend && mvn -DskipTests package` → `docker cp` 出来替换 → 重启 omp-app |
-| Vue 代码（`web/src/`） | 本地 `bun run build` → rsync dist → 重建 omp-allinone 镜像 → 重启 omp-app |
-| 配置 `prod-application.yml` | scp 到 `/home/omp/docker-build/` → 重建镜像 → 重启 omp-app |
-| omp 源码 / omp-dev.sh | rsync omp 目录 → 重建镜像 → 重启 omp-app |
-| Rust 代码（`crates/`） | 重交叉编译 .node + 重打 jar → rsync → 重建镜像 → 重启 |
+| Java 代码（`backend/src/`） | 本地 `mvn package` → rsync jar → 重建 omp-allinone（业务层）→ 重启 |
+| Java 代码（容器内调试） | 容器内 `cd /app/backend && mvn -DskipTests package` → `docker cp` 出来替换 → 重启 omp-app |
+| PC 前端 Vue 代码（`web/src/`） | 本地 `bun run build` → rsync dist → 重建业务镜像 → 重启 |
+| **H5 移动端代码（`uniapp/src/`）** | **本地 `yarn build:h5` → rsync `uniapp/dist/build/h5/` 到 `/home/omp/docker-build/h5/` → 重建业务镜像 → 重启** |
+| 配置 `prod-application.yml` | scp 到 `/home/omp/docker-build/` → 重建业务镜像 → 重启 |
+| omp 源码 / omp-dev.sh | rsync omp 目录 → 重建业务镜像 → 重启 |
+| Rust 代码（`crates/`） | 重交叉编译 .node + 重打 jar → rsync → 重建业务镜像 → 重启 |
+| **Dockerfile.allinone**（业务层） | 本地改 → rsync 到 120 上 `Dockerfile` → 重建业务镜像 |
+| **Dockerfile.allinone.base**（环境层） | 本地改 → rsync 到 120 上 `Dockerfile.base` → **重建 base + 业务** |
 
-> 数据在 docker volume 里，容器重建不丢数据。改前端/后端时 omp 层 docker 缓存命中，构建很快。
+> 数据在 docker volume 里，容器重建不丢数据。**业务层重建 base 缓存命中，10-30s 完成**。
 
-### 19.2 一键更新（前后端）
+### 19.2 一键更新（前后端 + H5）
 
 ```bash
 SERVER=root@10.126.2.120
@@ -1283,11 +1148,14 @@ export JAVA_HOME="/Users/chenzhiwei/Library/Java/JavaVirtualMachines/ms-21.0.10/
 (cd web && bun run build) && \
   rsync -az --delete web/dist/ $SERVER:/home/omp/docker-build/dist/
 
-# 服务器：重建镜像 + 重启容器
+(cd uniapp && yarn build:h5) && \
+  rsync -az --delete uniapp/dist/build/h5/ $SERVER:/home/omp/docker-build/h5/
+
+# 服务器：重建业务镜像 + 重启容器（base 缓存命中，10-30s）
 ssh $SERVER 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && \
   docker rm -f omp-app && \
   docker run -d --restart unless-stopped --name omp-app \
-    -p 8000:80 -p 8080:8080 \
+    -p 8000:80 -p 8080:8080 -p 8888:8888 \
     -v omp-workspaces:/data/omp/workspaces \
     -v omp-agent:/data/omp/agent \
     -v omp-logs:/data/omp/logs \
@@ -1299,9 +1167,15 @@ ssh $SERVER 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . 
 ### 19.3 仅更新前端
 
 ```bash
+# PC 端
 cd /Users/chenzhiwei/work/github/oh-my-pi-main/web && bun run build
-# 镜像里前端是 COPY 进去的，必须重建镜像才能让 nginx serve 新内容
 rsync -az --delete dist/ root@10.126.2.120:/home/omp/docker-build/dist/
+
+# H5 移动端
+cd /Users/chenzhiwei/work/github/oh-my-pi-main/uniapp && yarn build:h5
+rsync -az --delete dist/build/h5/ root@10.126.2.120:/home/omp/docker-build/h5/
+
+# 重建业务镜像 + 重启
 ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && docker restart omp-app'
 ```
 
@@ -1313,6 +1187,24 @@ ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone
 ```bash
 scp prod-application.yml root@10.126.2.120:/home/omp/docker-build/
 ssh root@10.126.2.120 'cd /home/omp/docker-build && docker build -t omp-allinone:latest . && docker restart omp-app'
+```
+
+### 19.4.1 重建 base 镜像（环境层有变更）
+
+```bash
+# 改 Dockerfile.allinone.base 后同步到 120
+rsync -az Dockerfile.allinone.base root@10.126.2.120:/home/omp/docker-build/Dockerfile.base
+
+# 重建 base + 业务（base 5-10 min，业务 10-30 s）
+ssh root@10.126.2.120 'cd /home/omp/docker-build && \
+  docker build -f Dockerfile.base -t omp-allinone-base:latest . && \
+  docker build -t omp-allinone:latest . && \
+  docker rm -f omp-app && \
+  docker run -d --restart unless-stopped --name omp-app \
+    -p 8000:80 -p 8080:8080 -p 8888:8888 \
+    -v omp-workspaces:/data/omp/workspaces -v omp-agent:/data/omp/agent \
+    -v omp-logs:/data/omp/logs -v omp-maven:/data/omp/maven-repository \
+    omp-allinone:latest'
 ```
 
 ### 19.5 运维命令速查
@@ -1723,28 +1615,35 @@ omp agent 启动时通过 `PI_CODING_AGENT_DIR` 环境变量定位 user-scope �
 本工程在 Java 端注入为 `/data/omp/agent/{username}/`）。omp 在这个目录下查找 **`mcp.json`** 自动发现
 MCP servers，查找 **`APPEND_SYSTEM.md`** 把内容追加到每次会话的 system prompt。
 
-**共享 MCP 配置**：所有用户共用同一份 `mcp.json`，统一维护在 `agentRoot/mcp.json`（如 `/data/omp/agent/mcp.json`）。
-Java 后端在 `OmpRpcClientFactory.spawn()` 为每个用户创建 symlink：
+**共享配置**：`mcp.json` / `APPEND_SYSTEM.md` / `models.yml` 统一维护在 `agentRoot/`（如 `/data/omp/agent/`）。
+容器启动时 entrypoint 从镜像 `/etc/omp/` 初始化到 volume 持久化层；Java 后端在
+`OmpRpcClientFactory.spawn()` 为每个用户创建 symlink 指向 `../` 同名文件：
 
 ```
-agentRoot/mcp.json              ← 唯一维护点（共享）
-agentRoot/{username1}/mcp.json  →  symlink → ../mcp.json
-agentRoot/{username2}/mcp.json  →  symlink → ../mcp.json
+agentRoot/mcp.json              ← 全局（唯一维护点）
+agentRoot/APPEND_SYSTEM.md      ← 全局
+agentRoot/models.yml            ← 全局（apiKey 由 Java 运行时注入）
+agentRoot/{username}/mcp.json          → symlink → ../mcp.json
+agentRoot/{username}/APPEND_SYSTEM.md  → symlink → ../APPEND_SYSTEM.md
+agentRoot/{username}/models.yml        → symlink → ../models.yml
 ```
 
 ```java
-ensureGlobalMcpSymlink(props.agentRoot(), agentDir);
+ensureGlobalSymlink(props.agentRoot(), agentDir, "mcp.json");
+ensureGlobalSymlink(props.agentRoot(), agentDir, "APPEND_SYSTEM.md");
+ensureGlobalSymlink(props.agentRoot(), agentDir, "models.yml");
 ```
 
-`ensureGlobalMcpSymlink` 行为：
-1. `agentRoot/mcp.json` 不存在 → 静默跳过（开发机未放共享配置时不阻塞 omp 启动）
+`ensureGlobalSymlink` 行为：
+1. `agentRoot/<filename>` 不存在 → 静默跳过（开发机未放共享配置时不阻塞 omp 启动）
 2. 已有正确 symlink → 不重建
-3. 旧文件/旧链接 → 删除后重建 symlink `../mcp.json`
+3. 旧文件/旧链接 → 删除后重建 symlink `../<filename>`
 4. symlink 创建失败 → 不抛（Windows 不支持/权限不够时退化，omp 启动时不带 MCP）
 
-#### 服务器端 `mcp.json` 共享配置
+#### 服务器端共享配置
 
-放在 `/home/omp/docker-build/mcp.json`，被 Dockerfile `COPY` 到 `/etc/omp/mcp.json`。
+三个文件统一放在 `/home/omp/docker-build/{mcp.json,APPEND_SYSTEM.md,models.yml}`，
+被 Dockerfile `COPY` 到 `/etc/omp/`。
 容器启动时 entrypoint 复制到 `/data/omp/agent/mcp.json`（共享路径）。
 
 ```json
@@ -1772,7 +1671,7 @@ ensureGlobalMcpSymlink(props.agentRoot(), agentDir);
 #### 服务器端 `APPEND_SYSTEM.md` 模板
 
 放在 `/home/omp/docker-build/APPEND_SYSTEM.md`，被 Dockerfile `COPY` 到 `/etc/omp/APPEND_SYSTEM.md`。
-Java 端在 spawn 时按用户合并生成 `{agentRoot}/{username}/APPEND_SYSTEM.md`（支持用户私有覆盖）。
+容器启动时由 entrypoint 复制到 `/data/omp/agent/APPEND_SYSTEM.md`，Java 端为每个用户创建 symlink 指向此全局文件，一处维护全局生效。
 
 ```markdown
 ## CodeGraph (mcp__codegraph__*)
@@ -1792,10 +1691,15 @@ retry once; do not fall back to grep without trying codegraph first.
 Fallback (graph missing / broken): use built-in `search` + `find` + `read`.
 ```
 
-> **修改后部署**：共享 MCP 配置更新后无需重建镜像——直接 `docker cp` 到共享路径即可：
+> **修改后部署**：共享配置更新后无需重建镜像——直接 `docker cp` 到共享路径即可：
 > ```bash
+> # 三个全局文件任一更新后
 > ssh root@10.126.2.120 'docker cp /home/omp/docker-build/mcp.json \
 >   omp-app:/data/omp/agent/mcp.json'
+> ssh root@10.126.2.120 'docker cp /home/omp/docker-build/APPEND_SYSTEM.md \
+>   omp-app:/data/omp/agent/APPEND_SYSTEM.md'
+> ssh root@10.126.2.120 'docker cp /home/omp/docker-build/models.yml \
+>   omp-app:/data/omp/agent/models.yml'
 > ```
 > 所有用户的下次会话即时生效（symlink 指向同一份文件）。
 
@@ -1805,12 +1709,18 @@ Fallback (graph missing / broken): use built-in `search` + `find` + `read`.
 # 1) 容器内 codegraph serve --mcp 子命令可用
 docker exec omp-app codegraph serve --help | grep -- --mcp
 
-# 2) 共享 mcp.json 存在
+# 2) 全局共享文件存在
 docker exec omp-app ls -la /data/omp/agent/mcp.json
+docker exec omp-app ls -la /data/omp/agent/APPEND_SYSTEM.md
+docker exec omp-app ls -la /data/omp/agent/models.yml
 
 # 3) 每个用户 agentDir 下是 symlink（不是拷贝）
 docker exec omp-app ls -la /data/omp/agent/<username>/mcp.json
 # 预期输出: lrwxrwxrwx  ...  mcp.json -> ../mcp.json
+docker exec omp-app ls -la /data/omp/agent/<username>/APPEND_SYSTEM.md
+# 预期输出: lrwxrwxrwx  ...  APPEND_SYSTEM.md -> ../APPEND_SYSTEM.md
+docker exec omp-app ls -la /data/omp/agent/<username>/models.yml
+# 预期输出: lrwxrwxrwx  ...  models.yml -> ../models.yml
 
 # 4) omp agent 进程跑起来后能看到 codegraph serve 子进程
 docker exec omp-app sh -c 'ps -ef | grep -E "codegraph serve|omp" | grep -v grep'
@@ -1938,4 +1848,41 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 
 本地走通 = **MCP 协议 / Java 改动 / 系统提示注入** 三层都没问题。
 服务器 L2 完整生效还需要 §20.8.1 的镜像构建踩坑修正落到位（已在 §18.4 Dockerfile 副本中固化）。
+
+---
+
+## 21. 系统维护开关
+
+为「服务更新前阻止新请求 / 等待已有会话推流完成」设计的功能。详见 [`docs/MAINTENANCE.md`](./MAINTENANCE.md)。
+
+### 21.1 简介
+
+| 项 | 说明 |
+|---|---|
+| **入口** | Admin 控制台 → Sessions 页 → 「系统维护」/ 「推流监控」按钮 |
+| **权限码** | `omp:system:maintenance`（需在系统管理 → 菜单管理中新建按钮型权限） |
+| **存储** | Redis（key `omp:maintenance:status`，TTL 7 天） |
+| **拦截** | 维护中拒绝 11 个 REST 接口 + WS 新连接，返回 503；登录、查询、admin/system 接口照常 |
+| **推流追踪** | 后端订阅 `turn_start`/`turn_end` 帧，实时统计正在推流的会话 |
+
+### 21.2 部署前置
+
+120 服务器需要可访问的 Redis 实例（在 prod-application.yml 里配，详见 §18.4 Redis 配置）。
+
+```bash
+# 选项 A：宿主机已有 Redis（推荐）
+# 选项 B：单独启动一个 Redis 容器
+docker run -d --restart unless-stopped --name omp-maintenance-redis \
+  -p 172.17.0.1:6379:6379 \
+  redis:7-alpine \
+  redis-server --requirepass "<your-redis-password>" --appendonly yes
+```
+
+### 21.3 更新流程（结合维护开关）
+
+1. 浏览器进 Admin → Sessions → 点「系统维护」开启
+2. 点「推流监控」查看正在推流的会话，等列表为空
+3. 执行 §19.2 一键更新
+4. 部署完成后，再次进入 Admin → 点「解除维护」恢复服务
+5. 若忘记解除，Redis TTL 7 天后自动过期
 

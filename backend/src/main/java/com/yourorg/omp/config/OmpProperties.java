@@ -21,9 +21,6 @@ public record OmpProperties(
         Security security,
         Vault vault,
         Ide ide,
-        // 全局 APPEND_SYSTEM 模板路径。spawn 时与 <agentDir>/APPEND_SYSTEM.user.md
-        // 合并生成 <agentDir>/APPEND_SYSTEM.md。两个源都不存在则不生成。
-        Path appendSystemTemplatePath,
         // 共享 agent 根目录（容器内 /data/omp/agent 持久化卷）。
         // entrypoint 在 root 用户的 ~/.omp/agent 上建 symlink 指向这里，
         // Java spawn 时为每个用户在该目录下建 extensions/skills/hooks/tools 的子 symlink。

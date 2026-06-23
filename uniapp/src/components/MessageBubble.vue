@@ -7,6 +7,8 @@ const props = defineProps<{
   text: string
 }>()
 
+const isUser = computed(() => props.role === 'user')
+
 // 平台判断：H5 端用 v-html，小程序保留 mp-html
 const isH5 = (() => {
   // #ifdef H5
@@ -92,7 +94,7 @@ function onImageTap(e: Event) {
 
 <template>
   <view
-    :class="['msg', { 'is-long': long, collapsed: collapsed }]"
+    :class="['msg', isUser ? 'is-user' : 'is-assistant', { 'is-long': long, collapsed: collapsed }]"
     @click="toggleCollapse"
     @longpress="onLongPress"
   >
@@ -165,6 +167,25 @@ function onImageTap(e: Event) {
 .msg {
   position: relative;
   color: inherit;
+}
+
+.is-user {
+  background: rgba(7, 193, 96, 0.1);
+  border: 1px solid rgba(7, 193, 96, 0.18);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 15px;
+  color: #1a1a1a;
+  display: inline-block;
+  max-width: 100%;
+  word-break: break-word;
+  overflow-wrap: break-word;
+}
+
+.is-assistant {
+  color: #1a1a1a;
+  font-size: 15px;
+  padding: 0;
 }
 
 .is-long.collapsed {

@@ -1,13 +1,3 @@
-# =============================================================================
-# application-120.yml —— 10.126.2.120 UAT 服务器生产配置（Docker All-in-One）
-# -----------------------------------------------------------------------------
-# ⚠️ 本文件含 120 服务器的真实敏感信息(数据库密码、JWT secret)。
-#   请勿提交到公共仓库。若已误提交,务必从 git 历史中清除并轮换这些凭证。
-# 部署位置:120 服务器 /home/omp/docker-build/prod-application.yml
-# 加载方式:--spring.config.additional-location=file:/app/prod-application.yml
-#         --spring.profiles.active=prod
-# 关联部署 runbook:docs/DEPLOY.md §18（10.126.2.120 UAT 服务器）
-# =============================================================================
 
 server:
   port: 8080
@@ -62,26 +52,11 @@ app:
     workspaces-root: /data/omp/workspaces
     agent-root: /data/omp/agent
     stderr-log-dir: /data/omp/logs
-    # 全局 APPEND_SYSTEM 模板，与 <agentDir>/APPEND_SYSTEM.user.md 合并生成 APPEND_SYSTEM.md
-    append-system-template-path: /etc/omp/APPEND_SYSTEM.md
-    # 共享 agent 根目录（运维统一管理 extensions/skills/hooks/tools 的入口）。
-    # entrypoint 在 /root/.omp/agent 上建 symlink → 此目录。
-    # Java spawn 时为每个用户在 agentRoot/{user} 下建子目录 symlink 指向 ../<subdir>，
-    # 让 omp 子进程（PI_CODING_AGENT_DIR=agentRoot/{user}）自动加载共享生态。
-    shared-agent-root: /data/omp/agent
-    # 启用 skills 加载（推荐 true）。false 时追加 --no-skills。
-    enable-skills: true
-    # 禁用 rules（CLAUDE.md / AGENTS.md）加载 —— 安全考虑，
-    # 用户工作区内 rules 不属于 omp 平台运营规则，避免污染会话。
-    enable-rules: false
     # IDE(code-server 5000→9000,容器内是解密代理)
     ide:
       enabled: true
       public-base-url: http://10.126.2.120:5000
-      # HMAC-SHA256 签名 key,64 个 hex 字符 (32 字节)。⚠️ 部署副本里需填实际值,
-      # 且必须与 code-server 启动时的 --signing-key 完全一致。
-      # 本地留空,默认不加签名(生产部署时务必配置)。
-      signing-key: ${OMP_IDE_SIGNING_KEY:}
+      signing-key: c7651505bd1737bb4533940ae8919ffbcfe50c5933ec4072f467df4d4ff7187c
   security:
     # ⚠️ JWT secret 64 字符随机,每台服务器独立,不要跨机器共用
     jwt-secret: SmDdzEH5aCIEk/R6XkU/bcHUJJ+cmuSbQ+fKpNEJpHfe75RDvQqMJC686OyjX15J

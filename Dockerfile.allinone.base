@@ -1,0 +1,140 @@
+# syntax=docker/dockerfile:1.7
+# ============================================================================
+# Dockerfile.base —— 业务无关的基础镜像
+# ----------------------------------------------------------------------------
+# 只装系统级依赖与开发/构建环境：Ubuntu 镜像源 + JDK + Bun + CodeGraph + RTK
+# + Maven + Node + Python + Go + Rust + 各种工具。
+# 业务层 Dockerfile 基于本镜像，仅 COPY 业务代码（jar / dist / h5 / omp）。
+#
+# 首次构建耗时：~5-10 min（拉镜像、装工具）
+# 后续发版：base 缓存命中，业务镜像 < 30s 完成
+#
+# 构建：
+#   docker build -f Dockerfile.base -t omp-allinone-base:latest .
+# ============================================================================
+
+FROM ubuntu:22.04
+
+# 装运行时依赖: nginx(前端) + git(workspace) + ca-certificates + tini(进程管理)
+RUN sed -i 's|http://archive.ubuntu.com|http://mirrors.tencentyun.com|g; s|http://security.ubuntu.com|http://mirrors.tencentyun.com|g' /etc/apt/sources.list && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      nginx git ca-certificates tini curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# JDK 21
+COPY jdk21 /usr/local/jdk21
+ENV PATH=/usr/local/jdk21/bin:/usr/local/bin:$PATH
+
+# bun
+COPY bun /usr/local/bin/bun
+RUN chmod +x /usr/local/bin/bun
+
+# Maven 3.9.9 -- Java 后端容器内构建（tarball 安装，~15 MB；不走 apt 避免拖 openjdk 依赖）。
+# 国内 gh-proxy 可能超时 → 直连 Apache archive；若仍失败可临时改 apt 装（maven 3.6.3）。
+ARG MAVEN_VERSION=3.9.9
+RUN curl -fsSL "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz" \
+      -o /tmp/maven.tar.gz \
+    && tar -xzf /tmp/maven.tar.gz -C /usr/local/ \
+    && mv /usr/local/apache-maven-${MAVEN_VERSION} /usr/local/maven \
+    && rm /tmp/maven.tar.gz \
+    && /usr/local/maven/bin/mvn --version
+
+ENV MAVEN_HOME=/usr/local/maven
+ENV PATH=/usr/local/maven/bin:/usr/local/jdk21/bin:/usr/local/bin:$PATH
+
+# Maven 全局 settings（aliyun 镜像 + 本地仓库 /data/omp/maven-repository）
+COPY maven-settings.xml /etc/omp/maven-settings.xml
+
+# CodeGraph -- 代码智能知识图（从本地 tarball COPY 进镜像，避免国内直连 GitHub 超时）
+# tarball 结构：codegraph-linux-x64/bin/codegraph（二进制） + lib/...（运行时）
+COPY codegraph-linux-x64.tar.gz /tmp/codegraph.tar.gz
+RUN tar -xzf /tmp/codegraph.tar.gz -C /usr/local/ \
+    && ln -s /usr/local/codegraph-linux-x64/bin/codegraph /usr/local/bin/codegraph \
+    && rm /tmp/codegraph.tar.gz \
+    && /usr/local/bin/codegraph --version
+
+# CodeGraph MCP 配置 + system prompt 模板 + model 模板
+# 容器启动时由 entrypoint 复制到 /data/omp/agent/（volume 持久化层）
+COPY mcp.json /etc/omp/mcp.json
+COPY APPEND_SYSTEM.md /etc/omp/APPEND_SYSTEM.md
+COPY models.yml /etc/omp/models.yml
+
+# RTK (Rust Token Killer) -- 压缩 LLM agent 调 shell 时的输出，60-90% token 节省。
+ARG RTK_VERSION=v0.42.4
+RUN curl -fsSL "https://gh-proxy.com/https://github.com/rtk-ai/rtk/releases/download/${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" \
+      -o /tmp/rtk.tar.gz \
+    && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin/ rtk \
+    && chmod +x /usr/local/bin/rtk \
+    && rm /tmp/rtk.tar.gz \
+    && rtk --version
+
+RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.pi/agent/extensions/rtk.ts /root/.omp/agent/extensions/rtk.ts
+
+# ============================================================================
+# 多语言开发环境（开发容器用）
+# ============================================================================
+ARG GO_VERSION=1.23.4
+ARG UV_VERSION=0.11.23
+ARG NODE_VERSION=22.11.0
+
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+      -o /tmp/node.tar.gz \
+      && tar -C /usr/local -xzf /tmp/node.tar.gz --strip-components=1 \
+      && rm /tmp/node.tar.gz \
+      && node --version && npm --version
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-pip python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 --version && pip3 --version
+
+RUN curl -fsSL "https://gh-proxy.com/https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+      -o /tmp/uv.tar.gz \
+    && tar -xzf /tmp/uv.tar.gz -C /usr/local/bin/ --strip-components=1 \
+    && rm /tmp/uv.tar.gz \
+    && uv --version
+
+RUN curl -fsSL "https://mirrors.aliyun.com/golang/go${GO_VERSION}.linux-amd64.tar.gz" \
+      -o /tmp/go.tar.gz \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz \
+    && /usr/local/go/bin/go version
+
+ENV PATH=/usr/local/go/bin:/root/go/bin:$PATH
+
+# Rust 工具链 —— 用清华/中科大镜像加速，避开 sh.rustup.rs 的国外下载
+# 镜像地址：
+#   RUSTUP_DIST_SERVER  — 实际下载 toolchain 的源
+#   RUSTUP_UPDATE_ROOT  — rustup 自身的更新源
+# 这里用清华源；若失败可临时换中科大 https://mirrors.ustc.edu.cn/rustup
+ENV RUSTUP_DIST_SERVER=https://mirrors.tuna.tsinghua.edu.cn/rustup \
+    RUSTUP_UPDATE_ROOT=https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
+
+# 优先用镜像安装；失败时回退到 sh.rustup.rs（用户可手动重试）
+RUN if curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 \
+        https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup-init.sh -o /tmp/rustup-init.sh; then \
+        echo "Using tsinghua mirror"; \
+        chmod +x /tmp/rustup-init.sh; \
+        CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup-bootstrap \
+            sh /tmp/rustup-init.sh -y --no-modify-path --default-toolchain stable --profile minimal; \
+    else \
+        echo "Falling back to sh.rustup.rs"; \
+        curl -fsSL --proto '=https' --tlsv1.2 https://sh.rustup.rs -o /tmp/rustup-init.sh; \
+        CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup-bootstrap \
+            sh /tmp/rustup-init.sh -y --no-modify-path --default-toolchain stable --profile minimal; \
+    fi \
+    && rm -f /tmp/rustup-init.sh \
+    && /usr/local/cargo/bin/rustup --version
+
+ENV PATH=/usr/local/cargo/bin:/usr/local/rustup-bootstrap/bin:$PATH \
+    CARGO_HOME=/usr/local/cargo \
+    RUSTUP_HOME=/usr/local/rustup-bootstrap
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+         vim jq build-essential net-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# base 镜像结束标记
+RUN echo "omp-allinone-base ready" > /etc/omp/.base-ready

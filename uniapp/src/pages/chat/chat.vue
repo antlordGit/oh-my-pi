@@ -699,7 +699,7 @@ function previewImage(item: ImageItem) {
   })
 }
 
-// ------ 中断 / 新对话 ------
+// ------ 中断 / 新对话 / 回退 ------
 async function doAbort() {
   if (!sessionId.value) return
   try {
@@ -707,6 +707,23 @@ async function doAbort() {
     success('已中断')
   } catch (e: any) {
     error(e?.message || '中断失败')
+  }
+}
+
+async function doRewind() {
+  if (sending.value || isStreaming.value || isArchived.value) return
+  const text = '/rewind'
+  sending.value = true
+  // 同步推入用户回退消息
+  turnLog.value.push({ role: 'user', timeline: [], userText: text })
+  timeline.value = []
+  toolCallById.value = {}
+  try {
+    await prompt(sessionId.value, text)
+  } catch (e: any) {
+    error(e?.message || '回退失败')
+  } finally {
+    sending.value = false
   }
 }
 
@@ -742,6 +759,9 @@ async function doRestore() {
 // ------ 思考块折叠 ------
 const showThinking = ref(false)
 
+// 是否有可回退消息
+const canRewind = computed(() => turnLog.value.length > 0)
+
 // ------ 返回 ------
 function goBack() {
   socket?.close()
@@ -759,25 +779,27 @@ onUnmounted(() => {
 })
 </script>
 
+
 <template>
-  <view :class="['page', theme.themeClass()]">
-    <!-- ========== 导航栏 ========== -->
-    <view class="navbar">
-      <view class="navbar-left" @click="goBack">
-        <OmpIcon name="back" size="22" style="color: var(--brand)" />
-        <text class="back-label">返回</text>
+  <view :class="['chat', theme.themeClass()]">
+    <!-- ============ Topbar ============ -->
+    <view class="topbar">
+      <view class="back-btn" @click="goBack">
+        <text class="back-icon">‹</text>
+        <text class="back-text">返回</text>
       </view>
-      <view class="navbar-title-wrap">
-        <text class="navbar-title">{{ session?.title || '会话' }}</text>
-        <view class="navbar-sub">
-          <view :class="['dot', isConnected ? 'on' : 'off']" />
-          <text class="navbar-sub-text">{{ isConnected ? (isStreaming ? '正在回复…' : '已连接') : '未连接' }}</text>
+      <view class="topbar-meta">
+        <view class="repo-chip" v-if="session?.repoId">
+          <text class="repo-chip-label">{{ session.repoId }}</text>
         </view>
+        <text class="session-title">{{ session?.title || '未命名会话' }}</text>
       </view>
-      <view class="navbar-right" />
+      <view class="topbar-status">
+        <view :class="['conn-dot', isConnected ? 'on' : 'off']" />
+      </view>
     </view>
 
-    <!-- ========== 消息区域 ========== -->
+    <!-- ============ Messages ============ -->
     <!-- #ifdef H5 -->
     <view class="messages" ref="msgContainer" @scroll="handleScroll">
     <!-- #endif -->
@@ -791,84 +813,60 @@ onUnmounted(() => {
       :enhanced="false"
     >
     <!-- #endif -->
-      <!-- 归档恢复条 -->
-      <view v-if="isArchived" class="archived-banner">
-        <text class="banner-text">此会话已归档，不可发送消息</text>
-        <view class="banner-btn" @click="doRestore">恢复会话</view>
+
+      <!-- Archived banner -->
+      <view v-if="isArchived" class="archived-block">
+        <view class="archived-card">
+          <text class="archived-title">此会话已归档</text>
+          <text class="archived-sub">归档状态不可发送消息，恢复后可继续对话。</text>
+          <view class="archived-btn" @click="doRestore">
+            <text>{{ session?.status === 'archived' ? '恢复会话' : '正在恢复…' }}</text>
+          </view>
+        </view>
       </view>
 
       <!-- 历史 turns -->
-      <template v-for="(turn, i) in turnLog" :key="'turn-' + i">
-        <view v-if="turn.role === 'user'" class="row row-user">
-          <view class="bubble bubble-user">
-            <view class="bubble-tail" />
-            <view class="bubble-text user-text">{{ turn.userText }}</view>
-          </view>
-          <view class="avatar avatar-user">
-            <OmpIcon name="user" size="20" style="color: #fff" />
-          </view>
+      <view
+        v-for="(t, i) in turnLog"
+        :key="'turn-' + i"
+        class="turn"
+      >
+        <view class="turn-gutter">
+          <text :class="['turn-num', t.role === 'assistant' ? 'accent' : '']">
+            {{ String(i + 1).padStart(2, '0') }}
+          </text>
+          <text :class="['turn-role', t.role === 'assistant' ? 'accent' : '']">
+            {{ t.role === 'user' ? '操作员' : '代理' }}
+          </text>
         </view>
+        <view class="turn-body">
+          <!-- 用户消息 -->
+          <MessageBubble
+            v-if="t.role === 'user'"
+            role="user"
+            :text="t.userText || ''"
+          />
 
-        <view v-else class="row row-assistant">
-          <view class="avatar avatar-ai">
-            <OmpIcon name="robot" size="20" style="color: #fff" />
-          </view>
-          <view class="bubble bubble-ai">
-            <view class="bubble-content">
-              <template v-for="item in turn.timeline" :key="item.order">
-                <view v-if="item.kind === 'thinking'" class="thinking">
-                  <view class="thinking-tag" @click="toggleThinking">
-                    <text class="thinking-tag-text">{{ showThinking ? '收起' : '展开' }}思考</text>
-                  </view>
-                  <view v-if="showThinking" class="thinking-content">
-                    <MessageBubble role="assistant" :text="(item as any).text" />
-                  </view>
+          <!-- 助手消息：thinking / text / toolcall 序列 -->
+          <template v-if="t.role === 'assistant' && Array.isArray(t.timeline) && t.timeline.length">
+            <template v-for="item in t.timeline" :key="item.order">
+              <!-- Thinking 折叠块 -->
+              <view v-if="item.kind === 'thinking'" class="thinking-block">
+                <view class="thinking-summary" @click="toggleThinking">
+                  <text class="caret">{{ showThinking ? '▾' : '▸' }}</text>
+                  <text class="thinking-summary-text">思考 · thinking</text>
                 </view>
-
-                <MessageBubble
-                  v-else-if="item.kind === 'text'"
-                  role="assistant"
-                  :text="(item as any).text"
-                />
-
-                <ToolCard
-                  v-else-if="item.kind === 'toolcall'"
-                  :tool-name="(item as any).name"
-                  :args="(item as any).args"
-                  :result="(item as any).result"
-                  :is-error="(item as any).error"
-                  :status="(item as any).status"
-                />
-              </template>
-            </view>
-          </view>
-        </view>
-      </template>
-
-      <!-- 实时流式 turn -->
-      <view v-if="timeline.length > 0" class="row row-assistant">
-        <view class="avatar avatar-ai">
-          <OmpIcon name="robot" size="20" style="color: #fff" />
-        </view>
-        <view class="bubble bubble-ai">
-          <view class="bubble-tail bubble-tail-l" />
-          <view class="bubble-content">
-            <template v-for="item in timeline" :key="'live-' + item.order">
-              <view v-if="item.kind === 'thinking'" class="thinking">
-                <view class="thinking-tag" @click="toggleThinking">
-                  <text class="thinking-tag-text">{{ showThinking ? '收起' : '展开' }}思考</text>
-                </view>
-                <view v-if="showThinking" class="thinking-content">
-                  <MessageBubble role="assistant" :text="(item as any).text" />
-                </view>
+                <view v-if="showThinking" class="thinking-text">{{ (item as any).text }}</view>
               </view>
 
+              <!-- 文本 -->
               <MessageBubble
                 v-else-if="item.kind === 'text'"
                 role="assistant"
                 :text="(item as any).text"
               />
 
+              <!-- 工具卡 -->
               <ToolCard
                 v-else-if="item.kind === 'toolcall'"
                 :tool-name="(item as any).name"
@@ -878,51 +876,65 @@ onUnmounted(() => {
                 :status="(item as any).status"
               />
             </template>
+          </template>
+        </view>
+      </view>
 
-            <view v-if="isStreaming" class="typing">
-              <view class="typing-dot" />
-              <view class="typing-dot" style="animation-delay: .2s" />
-              <view class="typing-dot" style="animation-delay: .4s" />
+      <!-- 实时流式 turn -->
+      <view v-if="isStreaming || timeline.length > 0" class="turn turn-live">
+        <view class="turn-gutter">
+          <text class="turn-num accent live-num">●</text>
+          <text class="turn-role accent">实时</text>
+        </view>
+        <view class="turn-body">
+          <view v-if="timeline.some(it => it.kind === 'thinking')" class="turn-label">
+            <view class="toggle-think" @click="toggleThinking">
+              <text>{{ showThinking ? '收起思考' : '展开思考' }}</text>
             </view>
           </view>
-        </view>
-      </view>
+          <template v-for="item in timeline" :key="'live-' + item.order">
+            <view v-if="item.kind === 'thinking'" class="thinking-block">
+              <view class="thinking-summary" @click="toggleThinking">
+                <text class="caret">{{ showThinking ? '▾' : '▸' }}</text>
+                <text class="thinking-summary-text">思考 · thinking</text>
+              </view>
+              <view v-if="showThinking" class="thinking-text">{{ (item as any).text }}</view>
+            </view>
 
-      <!-- /tree 模式 -->
-      <view v-if="treeMode" class="tree-panel">
-        <view class="tree-head">
-          <text class="tree-title">会话分支</text>
-          <view class="tree-close" @click="exitTreeMode">
-            <OmpIcon name="close" size="18" style="color: var(--ink-mute)" />
-          </view>
-        </view>
-        <view class="tree-list">
-          <view
-            v-for="(entry, idx) in treeEntries"
-            :key="entry.sessionId"
-            class="tree-row"
-            @click="treeEnter(entry)"
-          >
-            <text>{{ entry.label }}</text>
-            <OmpIcon name="back" size="14" style="color: var(--ink-faint); transform: rotate(180deg)" />
-          </view>
-        </view>
-      </view>
+            <view v-else-if="item.kind === 'text'" class="streaming-block">
+              <MessageBubble role="assistant" :text="(item as any).text" />
+            </view>
 
-      <!-- UI 询问弹窗 -->
-      <view v-if="uiRequest" class="row row-assistant">
-        <view class="avatar avatar-ai">
-          <OmpIcon name="robot" size="20" style="color: #fff" />
-        </view>
-        <view class="bubble bubble-ai" style="flex: 1">
-          <view class="bubble-tail bubble-tail-l" />
-          <view class="bubble-content" style="padding: 0">
-            <UiRequestDialog
-              :request="uiRequest"
-              @submit="sendUiResponse"
-              @cancel="cancelUiRequest"
+            <ToolCard
+              v-else-if="item.kind === 'toolcall'"
+              :tool-name="(item as any).name"
+              :args="(item as any).args"
+              :result="(item as any).result"
+              :is-error="(item as any).error"
+              :status="(item as any).status"
             />
+          </template>
+
+          <view v-if="isStreaming && !timeline.length" class="typing">
+            <view class="typing-dot" />
+            <view class="typing-dot" style="animation-delay:.15s" />
+            <view class="typing-dot" style="animation-delay:.3s" />
           </view>
+        </view>
+      </view>
+
+      <!-- UI 询问 -->
+      <view v-if="uiRequest" class="turn ui-request-turn">
+        <view class="turn-gutter">
+          <text class="turn-num accent">◆</text>
+          <text class="turn-role accent">等待输入</text>
+        </view>
+        <view class="turn-body">
+          <UiRequestDialog
+            :request="uiRequest"
+            @submit="sendUiResponse"
+            @cancel="cancelUiRequest"
+          />
         </view>
       </view>
 
@@ -934,59 +946,72 @@ onUnmounted(() => {
     </scroll-view>
     <!-- #endif -->
 
-    <!-- ========== Composer ========== -->
-    <view class="composer">
-      <view v-if="pendingImages.length > 0" class="composer-images">
+    <!-- ============ Composer ============ -->
+    <view v-if="!isArchived" class="composer">
+      <!-- 工具栏 -->
+      <view class="composer-toolbar">
+        <view
+          v-if="canRewind"
+          class="btn-mini"
+          :class="{ disabled: sending || isStreaming }"
+          @click="doRewind"
+        >
+          <text class="caret">↺</text>
+          <text>回退</text>
+        </view>
+        <view class="btn-mini" :class="{ disabled: sending || isStreaming }" @click="doNew">
+          <text class="caret">+</text>
+          <text>新对话</text>
+        </view>
+        <view
+          v-if="isStreaming"
+          class="btn-mini-danger"
+          @click="doAbort"
+        >
+          <text>中断</text>
+        </view>
+        <text class="composer-hint">{{ isStreaming ? '生成中…' : '' }}</text>
+      </view>
+
+      <!-- 图片缩略 -->
+      <view v-if="pendingImages.length > 0" class="composer-thumbs">
         <view
           v-for="img in pendingImages"
           :key="img.id"
-          class="thumb"
+          class="composer-thumb"
           @click="previewImage(img)"
         >
           <image :src="img.localPath" mode="aspectFill" class="thumb-img" />
-          <view class="thumb-close" @click.stop="removePendingImage(img.id)">×</view>
+          <view class="thumb-x" @click.stop="removePendingImage(img.id)">
+            <text>✕</text>
+          </view>
         </view>
       </view>
 
-      <view class="toolbar-row">
-        <view class="toolbar-btn" @click="pickImages">
-          <OmpIcon name="image" size="16" />
-          <text class="toolbar-text">图片</text>
+      <!-- 输入行 -->
+      <view class="composer-input-row">
+        <view class="attach-btn" @click="pickImages">
+          <text class="attach-icon">📎</text>
+          <text v-if="pendingImages.length > 0" class="attach-badge">{{ pendingImages.length }}</text>
         </view>
-        <view v-if="!isArchived" class="toolbar-btn" @click="doNew">
-          <OmpIcon name="newChat" size="16" />
-          <text class="toolbar-text">新对话</text>
-        </view>
-        <view v-if="isStreaming" class="toolbar-btn toolbar-btn-danger" @click="doAbort">
-          <OmpIcon name="stop" size="14" />
-          <text class="toolbar-text">中断</text>
-        </view>
-      </view>
-
-      <view class="composer-main">
         <textarea
           v-model="inputText"
           class="composer-input"
-          :placeholder="isArchived ? '已归档' : '请输入消息…'"
+          :placeholder="isStreaming ? '生成中，可继续输入…' : '在此描述你的需求…'"
           placeholder-class="composer-ph"
-          :disabled="isArchived"
+          :disabled="sending"
           :auto-height="true"
           :show-confirm-bar="false"
           confirm-type="send"
           :maxlength="-1"
           @confirm="sendMessage"
         />
-
         <view
-          v-if="inputText.trim() || pendingImages.length > 0"
           class="send-btn"
-          :class="{ loading: sending }"
+          :class="{ disabled: sending || (!inputText.trim() && pendingImages.length === 0) }"
           @click="sendMessage"
         >
-          <OmpIcon name="send" size="16" style="color: #fff" />
-        </view>
-        <view v-else class="send-btn send-btn-plus">
-          <OmpIcon name="plus" size="18" style="color: var(--ink-2)" />
+          <text>{{ isStreaming ? '生成中…' : (sending ? '提交中…' : '发送') }}</text>
         </view>
       </view>
     </view>
@@ -995,312 +1020,423 @@ onUnmounted(() => {
 
 <style lang="scss" scoped>
 // ====================================================================
-// Chat View — 温润质感 · 微信骨架 · 细腻深度
+// Chat View — 移动端编辑风格（参照 Web ChatView 移植）
 // ====================================================================
 
-.page {
+.chat {
   display: flex;
   flex-direction: column;
   height: 100vh;
   height: 100dvh;
-  background: #eeedea;
+  padding: 8px;
+  gap: 10px;
+  background: #fff;
   overflow: hidden;
+  box-sizing: border-box;
 }
 
-// ============ 导航栏 ============
-.navbar {
-  position: relative;
+// ============ Topbar — 胶囊卡 ============
+.topbar {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  height: 48px;
-  padding: 0 16px;
-  padding-top: env(safe-area-inset-top, 0);
-  background: rgba(255,255,255,.94);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border-bottom: .5px solid rgba(0,0,0,.06);
+  gap: 12px;
+  padding: 8px 14px;
+  padding-top: calc(8px + env(safe-area-inset-top, 0));
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 999px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03), 0 2px 8px rgba(0, 0, 0, 0.03);
+}
+
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(7, 193, 96, 0.08);
   flex-shrink: 0;
+  &:active { background: rgba(7, 193, 96, 0.15); }
+}
+.back-icon { font-size: 18px; color: #07c160; line-height: 1; }
+.back-text { font-size: 13px; color: #07c160; }
+
+.topbar-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
 }
 
-.navbar-left {
-  position: absolute; left: 16px;
-  display: flex; align-items: center; gap: 4px;
-  z-index: 2;
+.repo-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 9px;
+  background: rgba(7, 193, 96, 0.1);
+  border: 1px solid rgba(7, 193, 96, 0.2);
+  color: #07c160;
+  border-radius: 999px;
+  flex-shrink: 0;
+  max-width: 120px;
+}
+.repo-chip-label {
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.back-label { font-size: 17px; color: #07c160; }
-
-.navbar-title-wrap {
-  position: absolute; left: 50%; transform: translateX(-50%);
-  display: flex; flex-direction: column; align-items: center;
-  max-width: 55%;
+.session-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a1a;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.navbar-title {
-  font-size: 17px; font-weight: 600; color: #191919;
-  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
-  max-width: 100%;
+.topbar-status { flex-shrink: 0; }
+.conn-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
 }
+.conn-dot.on { background: #07c160; box-shadow: 0 0 4px rgba(7,193,96,.6); }
+.conn-dot.off { background: #c0c0c0; }
 
-.navbar-sub { display: flex; align-items: center; gap: 4px; }
-.dot { width: 5px; height: 5px; border-radius: 50%; }
-.dot.on { background: #07c160; }
-.dot.off { background: #c0c0c0; }
-.navbar-sub-text { font-size: 11px; color: #999; }
-.navbar-right { position: absolute; right: 16px; }
-
-// ============ 消息区域 ============
+// ============ Messages ============
 .messages {
-  flex: 1; height: 0; min-height: 0;
-  padding: 12px 12px 0;
+  flex: 1;
+  height: 0;
+  min-height: 0;
+  padding: 12px 6px 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  background: #fff;
 }
 
-.archived-banner {
-  display: flex; align-items: center; justify-content: center;
-  gap: 12px; margin: 0 auto 16px; padding: 10px 16px;
-  background: rgba(0,0,0,.04); border-radius: 8px; max-width: 80%;
+// 归档卡
+.archived-block {
+  padding: 30px 16px;
+  display: flex;
+  justify-content: center;
 }
-.banner-text { font-size: 13px; color: #999; }
-.banner-btn { font-size: 13px; color: #07c160; font-weight: 500; }
-
-// ============ 气泡 — 微影深度 ============
-.row {
-  display: flex; align-items: flex-start;
-  margin-bottom: 18px; gap: 8px;
-  min-width: 0;
-  animation: msg-in .3s cubic-bezier(.22,1,.36,1) both;
+.archived-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 24px 20px;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: 12px;
+  max-width: 320px;
+  box-shadow: 0 1px 3px rgba(0,0,0,.03);
+}
+.archived-title {
+  font-size: 16px; font-weight: 600;
+  color: #1a1a1a; margin-bottom: 8px;
+}
+.archived-sub {
+  font-size: 13px; color: #888;
+  line-height: 1.6; margin-bottom: 18px;
+}
+.archived-btn {
+  padding: 8px 22px;
+  background: #07c160;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 14px;
+  &:active { background: #06ad55; }
 }
 
-@keyframes msg-in {
+// ============ Turn — 编号 + role + body ============
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 0;
+  margin-bottom: 12px;
+  animation: turn-in .35s cubic-bezier(.22,1,.36,1) both;
+}
+@keyframes turn-in {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 
-.row-user { flex-direction: row-reverse; }
-.row-assistant { flex-direction: row; }
-
-.avatar {
-  width: 36px; height: 36px; border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-  box-shadow: 0 1px 3px rgba(0,0,0,.08);
-}
-.avatar-user { background: linear-gradient(140deg, #07c160, #05a050); }
-.avatar-ai { background: linear-gradient(140deg, #5b8ef7, #4170e0); }
-
-.bubble {
-  position: relative;
-  max-width: 70%;
-  min-width: 0; // flex 子项不撑破
-  border-radius: 10px;
-  box-shadow: 0 1px 2px rgba(0,0,0,.04);
-  overflow-wrap: break-word;
-  word-break: break-word;
+// Gutter — 横向小标签（移动端）
+.turn-gutter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
 }
 
-.bubble-user {
-  background: linear-gradient(160deg, #8fe868, #7cd855);
-  border-radius: 10px 4px 10px 10px;
-  box-shadow: 0 1px 2px rgba(0,0,0,.04), 0 3px 8px rgba(7,193,96,.08);
+.turn-num {
+  font-size: 11px;
+  color: #888;
+  background: #f0efec;
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: 4px;
+  padding: 1px 7px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.turn-num.accent {
+  color: #07c160;
+  background: rgba(7,193,96,.08);
+  border-color: rgba(7,193,96,.2);
 }
 
-.bubble-ai {
+.turn-role {
+  font-size: 11px;
+  color: #888;
+  font-weight: 500;
+}
+.turn-role.accent { color: #07c160; }
+
+.live-num {
+  animation: gentle-pulse 1.8s ease-in-out infinite;
+}
+@keyframes gentle-pulse {
+  0%, 100% { opacity: .5; }
+  50% { opacity: 1; }
+}
+
+.turn-body {
+  min-width: 0;
+}
+.turn-label {
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.toggle-think {
+  display: inline-flex;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #888;
   background: #fff;
-  border-radius: 4px 10px 10px 10px;
-  box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 2px 6px rgba(0,0,0,.03);
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 999px;
+  &:active { background: #f0efec; }
 }
 
-// 用户气泡尖角
-.bubble-tail {
-  position: absolute;
-  top: 10px; right: -5px;
-  width: 0; height: 0;
-  border-style: solid;
-  border-width: 5px 0 5px 6px;
-  border-color: transparent transparent transparent #8fe868;
-}
-
-.bubble-text {
-  padding: 11px 14px;
-  font-size: 15px; line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  color: #1a1a1a;
-  max-width: 100%;
-  overflow: hidden;
-}
-.bubble-content {
-  padding: 11px 14px;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  word-break: break-word;
-  max-width: 100%;
-  overflow: hidden;
-}
-
-// ============ 思考块 ============
-.thinking { margin-bottom: 8px; }
-
-.thinking-tag {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 12px;
-  background: rgba(0,0,0,.035);
-  border-radius: 20px; margin-bottom: 8px;
-  &::before {
-    content: ''; width: 6px; height: 6px;
-    border-radius: 50%; background: #07c160;
-    opacity: .5;
-  }
-}
-.thinking-tag-text { font-size: 12px; color: #999; }
-
-.thinking-content {
-  padding: 10px 14px;
-  background: rgba(0,0,0,.02);
+// ============ Thinking 折叠块 ============
+.thinking-block {
+  border: 1px dashed rgba(0,0,0,.1);
   border-radius: 8px;
-  border-left: 2px solid rgba(0,0,0,.06);
+  background: rgba(0,0,0,.02);
+  padding: 10px 14px;
+  margin: 6px 0 10px;
+}
+.thinking-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.caret { font-size: 11px; color: #07c160; }
+.thinking-summary-text { font-size: 11px; color: #888; }
+.thinking-text {
+  margin-top: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: #555;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, monospace);
 }
 
-.thinking-content :deep(.md-body) {
-  font-size: 13px; line-height: 1.65; color: #999;
-}
-.thinking-content :deep(.md-body p) { margin: 0 0 6px; }
-.thinking-content :deep(.md-body p:last-child) { margin-bottom: 0; }
-.thinking-content :deep(.md-body strong) { color: #666; }
-.thinking-content :deep(.md-body code) {
-  font-size: .85em; padding: 1px 5px;
-  background: rgba(0,0,0,.03); border-radius: 3px;
-}
+// 流式块
+.streaming-block { display: block; }
 
-// ============ 打字机 ============
-.typing { display: flex; gap: 4px; padding: 8px 0 0; }
-
+// 打字指示器
+.typing {
+  display: flex;
+  gap: 5px;
+  padding: 8px 0;
+}
 .typing-dot {
-  width: 6px; height: 6px; border-radius: 50%;
-  background: #c0c0c0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #b5b5b5;
   animation: typing-bounce 1.2s ease-in-out infinite;
 }
-
 @keyframes typing-bounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: .3; }
-  30% { transform: translateY(-5px); opacity: .8; }
+  0%, 60%, 100% { opacity: .3; transform: scale(.85); }
+  30% { opacity: 1; transform: scale(1); }
 }
 
-// ============ Tree ============
-.tree-panel {
-  margin: 8px 0; background: #fff;
-  border-radius: 10px; overflow: hidden;
-  box-shadow: 0 1px 3px rgba(0,0,0,.04);
-}
-.tree-head {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 13px 16px; border-bottom: .5px solid #e8e8e8;
-}
-.tree-title { font-size: 15px; font-weight: 600; color: #191919; }
-.tree-close { padding: 4px; }
-.tree-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 14px 16px; border-bottom: .5px solid #e8e8e8;
-  font-size: 14px; color: #191919;
-}
-.tree-row:last-child { border-bottom: none; }
-
-// ============ Composer — 玻璃质感 ============
+// ============ Composer — 卡片+按钮 ============
 .composer {
   flex-shrink: 0;
-  background: rgba(255,255,255,.95);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  border-top: .5px solid rgba(0,0,0,.05);
-  box-shadow: 0 -1px 3px rgba(0,0,0,.03);
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 0));
+  background: #fff;
+  border: 1px solid rgba(0,0,0,.06);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0,0,0,.03), 0 4px 12px rgba(0,0,0,.03);
+  margin-bottom: env(safe-area-inset-bottom, 0);
 }
 
-.composer-images { display: flex; gap: 6px; padding: 0 0 8px; overflow-x: auto; }
+// Toolbar
+.composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0,0,0,.06);
+  background: #fafaf8;
+}
+.btn-mini {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: #555;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,.08);
+  border-radius: 999px;
+  &:active:not(.disabled) {
+    border-color: #07c160;
+    color: #07c160;
+  }
+  &.disabled { opacity: .4; }
+}
+.btn-mini .caret { color: #07c160; font-size: 12px; }
+.btn-mini-danger {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 11px;
+  background: rgba(250,81,81,.08);
+  border: 1px solid rgba(250,81,81,.2);
+  color: #fa5151;
+  border-radius: 999px;
+}
+.composer-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: #888;
+}
 
-.thumb {
-  position: relative; width: 56px; height: 56px;
-  border-radius: 8px; overflow: hidden;
-  border: 1px solid #e5e5e5; flex-shrink: 0;
-  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+// 缩略图行
+.composer-thumbs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px 0;
+  flex-wrap: wrap;
+}
+.composer-thumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(0,0,0,.08);
 }
 .thumb-img { width: 100%; height: 100%; }
-.thumb-close {
-  position: absolute; top: 2px; right: 2px;
-  width: 18px; height: 18px; border-radius: 50%;
-  background: rgba(0,0,0,.5); color: #fff;
+.thumb-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0,0,0,.55);
+  color: #fff;
   font-size: 10px;
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-
-// 工具栏
-.toolbar-row { display: flex; gap: 6px; padding: 0 0 8px; }
-
-.toolbar-btn {
-  display: flex; align-items: center; gap: 4px;
-  padding: 5px 14px;
-  background: rgba(0,0,0,.03);
-  border: 1px solid rgba(0,0,0,.04);
-  border-radius: 20px;
-  font-size: 13px; color: #666;
-  transition: background .15s ease;
-  &:active { background: rgba(0,0,0,.06); }
-}
-
-.toolbar-btn-danger {
-  background: rgba(250,81,81,.06);
-  border-color: rgba(250,81,81,.1);
-  color: #fa5151;
-}
-.toolbar-text { font-size: 13px; }
 
 // 输入行
-.composer-main { display: flex; align-items: flex-end; gap: 8px; }
+.composer-input-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  padding: 4px 4px 4px 0;
+}
+
+.attach-btn {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  margin: 4px 2px 4px 8px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #888;
+  flex-shrink: 0;
+  &:active { background: rgba(7,193,96,.1); color: #07c160; }
+}
+.attach-icon { font-size: 16px; }
+.attach-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: #07c160;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
 
 .composer-input {
   flex: 1;
-  min-height: 38px; max-height: 100px;
-  padding: 9px 14px;
-  background: #f4f3f0;
-  border: 1px solid rgba(0,0,0,.06);
-  border-radius: 8px;
-  font-size: 15px; color: #191919; line-height: 1.45;
-  transition: border-color .2s ease, background .2s ease, box-shadow .2s ease;
-  &:focus {
-    border-color: #07c160;
-    background: #fff;
-    box-shadow: 0 0 0 3px rgba(7,193,96,.06);
-    outline: none;
-  }
+  min-height: 38px;
+  max-height: 120px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 0;
+  font-size: 14px;
+  color: #1a1a1a;
+  line-height: 1.55;
+  resize: none;
 }
 .composer-ph { color: #b5b5b5; }
 
-// 发送按钮
 .send-btn {
-  width: 52px; height: 38px;
+  margin: 4px;
+  padding: 8px 18px;
   background: #07c160;
-  color: #fff; font-size: 14px;
+  color: #fff;
+  font-size: 13px;
   border-radius: 8px;
-  display: flex; align-items: center; justify-content: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 1px 4px rgba(7,193,96,.2);
-  transition: background .15s ease, transform .15s ease;
-  &:active {
-    background: #06ad55;
-    transform: scale(.96);
+  &:active:not(.disabled) { background: #06ad55; }
+  &.disabled {
+    background: #d8d6d2;
+    color: #fff;
+    opacity: .6;
   }
 }
-.send-btn.loading { opacity: .5; }
 
-.send-btn-plus {
-  width: 38px;
-  background: #f4f3f0;
-  border: 1px solid rgba(0,0,0,.06);
-  color: #999;
-  box-shadow: none;
-  &:active { background: #e8e7e3; }
+// ============ 移动端窄屏适配 ============
+@media (max-width: 380px) {
+  .chat { padding: 6px; gap: 8px; }
+  .repo-chip { max-width: 80px; }
+  .session-title { font-size: 13px; }
+  .turn { padding: 10px 0; margin-bottom: 10px; }
+  .composer-input { font-size: 13px; }
 }
 </style>

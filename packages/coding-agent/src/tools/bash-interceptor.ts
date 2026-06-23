@@ -29,6 +29,55 @@ export interface BashPathInterceptResult {
 // Workspace path-boundary interceptor
 // =============================================================================
 
+/** Depth limit for scanning shell-wrapped embedded commands (max nesting). */
+const EMBEDDED_SCAN_MAX_DEPTH = 4;
+
+/** Shell interpreters whose `-c` arguments should be scanned recursively. */
+const SHELL_WRAPPERS = new Set(["sh", "bash", "zsh", "dash", "ash", "ksh"]);
+
+/** Check whether an argument token contains a `-c`/`--command` flag. */
+function hasCommandFlag(arg: string): boolean {
+	if (arg === "-c" || arg === "--command") return true;
+	return /^-[^-]*c[^-]*$/.test(arg);
+}
+
+/** Scan a list of already-tokenised words for paths that escape `absCwd`. */
+function scanTokenList(tokens: string[], absCwd: string): BashPathInterceptResult {
+	for (const token of tokens) {
+		if (isShellOption(token)) continue;
+		if (token.includes("$") || token.includes("`")) continue;
+
+		const resolved = resolveShellTokenPath(token, absCwd);
+		if (resolved === null) continue;
+		if (!resolved.outside) continue;
+
+		return { block: true, offendingPath: resolved.absolute };
+	}
+	return { block: false };
+}
+
+/** Extract command strings from `sh -c '...'`, `bash -c "..."`, `eval "..."` patterns. */
+function extractEmbeddedCommands(tokens: string[]): string[] {
+	const embedded: string[] = [];
+	for (let i = 0; i < tokens.length; i++) {
+		const base = tokens[i].split("/").pop()?.toLowerCase() ?? "";
+		if (SHELL_WRAPPERS.has(base)) {
+			const limit = Math.min(i + 4, tokens.length);
+			for (let j = i + 1; j < limit; j++) {
+				const t = tokens[j];
+				if (hasCommandFlag(t)) {
+					if (j + 1 < tokens.length) embedded.push(tokens[j + 1]);
+					break;
+				}
+				if (!isShellOption(t)) break;
+			}
+		} else if (tokens[i] === "eval") {
+			if (i + 1 < tokens.length) embedded.push(tokens[i + 1]);
+		}
+	}
+	return embedded;
+}
+
 /**
  * Scan a shell command string for file paths that would reach outside `cwd`.
  *
@@ -39,10 +88,16 @@ export interface BashPathInterceptResult {
  * - Validates absolute paths (`/etc/passwd`) and relative paths with `..`
  *   segments (`../foo`, `./../../bar`).
  * - Only blocks plain strings; shell expansions/backticks are left to runtime.
+ * - Recursively scans embedded commands inside `sh -c`, `bash -c`, `eval`, etc.
+ *   up to `maxDepth` levels deep (default 4).
  *
  * @returns `{ block: true, offendingPath }` when an out-of-workspace path is found.
  */
-export function checkBashCwdPath(command: string, cwd: string): BashPathInterceptResult {
+export function checkBashCwdPath(
+	command: string,
+	cwd: string,
+	maxDepth: number = EMBEDDED_SCAN_MAX_DEPTH,
+): BashPathInterceptResult {
 	const absCwd = path.resolve(cwd);
 
 	// Tokenise shell command: honour quoting rules and escape handling.
@@ -50,15 +105,17 @@ export function checkBashCwdPath(command: string, cwd: string): BashPathIntercep
 	// unambiguously live outside cwd.
 	const tokens = shellTokenize(command);
 
-	for (const token of tokens) {
-		if (isShellOption(token)) continue;
-		if (token.includes("$") || token.includes("`")) continue;
+	// Scan the immediate tokens first.
+	const result = scanTokenList(tokens, absCwd);
+	if (result.block) return result;
 
-		const resolved = resolveShellTokenPath(token, absCwd);
-		if (resolved === null) continue;
-		if (!resolved.outside) continue;
-
-		return { block: true, offendingPath: resolved.absolute };
+	// Recurse into embedded commands (sh -c, bash -c, eval, etc.).
+	if (maxDepth > 0) {
+		const embeddedCommands = extractEmbeddedCommands(tokens);
+		for (const embedded of embeddedCommands) {
+			const inner = checkBashCwdPath(embedded, cwd, maxDepth - 1);
+			if (inner.block) return inner;
+		}
 	}
 
 	return { block: false };

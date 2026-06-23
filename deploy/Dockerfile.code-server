@@ -1,0 +1,29 @@
+# =============================================================================
+# code-server with HMAC workspace signature verification (OMP 2)
+# =============================================================================
+# 基于官方 codercom/code-server:4.112.0 镜像,覆盖 3 个编译后的 JS 文件:
+#   - out/node/routes/vscode.js   (验签中间件)
+#   - out/node/verifySignature.js (HMAC 工具)
+#   - out/node/cli.js             (--signing-key CLI 参数)
+#
+# 启动时通过 --signing-key <hex> 参数传入 HMAC key,
+# 必须与 omp 后端的 OMP_IDE_SIGNING_KEY 完全一致。
+#
+# 构建:从 code-server-main/ 目录(oh-my-pi-main 仓库子目录)
+#       docker build -f Dockerfile.omp -t chenzhiwei/code-server:4.112.0-omp .
+#       docker push chenzhiwei/code-server:4.112.0-omp
+# =============================================================================
+FROM codercom/code-server:4.112.0
+
+USER root
+
+# code-server 官方 deb 包安装在 /usr/lib/code-server/
+# 覆盖修改后的文件(含 source map)
+COPY out/node/routes/vscode.js          /usr/lib/code-server/out/node/routes/vscode.js
+COPY out/node/verifySignature.js        /usr/lib/code-server/out/node/verifySignature.js
+COPY out/node/cli.js                    /usr/lib/code-server/out/node/cli.js
+COPY out/node/routes/vscode.js.map      /usr/lib/code-server/out/node/routes/vscode.js.map 2>/dev/null || true
+COPY out/node/verifySignature.js.map    /usr/lib/code-server/out/node/verifySignature.js.map 2>/dev/null || true
+COPY out/node/cli.js.map                /usr/lib/code-server/out/node/cli.js.map 2>/dev/null || true
+
+USER 1000

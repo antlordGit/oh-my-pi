@@ -767,10 +767,9 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (cwdViolation.block) {
 			const absCwd = path.resolve(commandCwd);
 			throw new ToolError(
-				`Access denied: bash command targets a path outside the workspace. ` +
-					`The path '${cwdViolation.offendingPath}' is outside workspace '${absCwd}'. ` +
-					`Only files inside the workspace can be accessed. Use read/write/edit/find/search tools or ` +
-					`relative paths inside the workspace.`,
+				`不可操作工作目录以外的文件和文件夹！` +
+					`路径 '${cwdViolation.offendingPath}' 不在工作目录 '${absCwd}' 内。` +
+					`仅能访问工作目录内的文件，请使用 read/write/edit/find/search 工具或工作目录内的相对路径。`,
 			);
 		}
 

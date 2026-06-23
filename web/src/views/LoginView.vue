@@ -116,14 +116,6 @@ async function submit() {
   position: relative;
   overflow: hidden;
 }
-.login-brand {
-  flex: 1.1;
-  min-width: 0;
-}
-.form-wrapper {
-  flex: 0.9;
-  min-width: 300px;
-}
 
 /* ====================================================================
    Left — brand + editorial typography
@@ -136,10 +128,18 @@ async function submit() {
   z-index: 1;
 }
 .col-left {
+  flex: 1.1;
+  min-width: 0;
   gap: 48px;
   justify-content: space-between;
   background:
     radial-gradient(circle at 20% 0%, rgba(22, 93, 255, 0.05), transparent 55%);
+}
+.col-right {
+  flex: 0.9;
+  min-width: 300px;
+  align-items: center;
+  justify-content: center;
 }
 .brand {
   display: inline-flex;
@@ -201,10 +201,6 @@ async function submit() {
 /* ====================================================================
    Right — Double-Bezel login island
    ==================================================================== */
-.col-right {
-  align-items: center;
-  justify-content: center;
-}
 
 .form-shell { width: 100%; max-width: 440px; }
 
@@ -301,8 +297,8 @@ async function submit() {
    ==================================================================== */
 @media (max-width: 768px) {
   .login { flex-direction: column; }
-  .login-brand { flex: 0 0 auto; }
-  .form-wrapper { flex: 1; }
+  .col-left { flex: 0 0 auto; }
+  .col-right { flex: 1; }
   .col { padding: 40px 24px; }
   .col-left { gap: 28px; justify-content: flex-start; }
   .hero { margin: 0; }

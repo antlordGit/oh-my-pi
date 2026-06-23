@@ -38,8 +38,6 @@ app:
     workspaces-root: ${OMP_WORKSPACES_ROOT:/tmp/omp/workspaces}
     agent-root: ${OMP_AGENT_ROOT:/tmp/omp/agent}
     stderr-log-dir: ${OMP_STDERR_LOG_DIR:/tmp/omp/logs}
-    # 全局 APPEND_SYSTEM 模板，与 <agentDir>/APPEND_SYSTEM.user.md 合并生成 APPEND_SYSTEM.md
-    append-system-template-path: ${OMP_APPEND_SYSTEM_TEMPLATE:/tmp/omp/APPEND_SYSTEM.md}
     pool:
       max-concurrent: 10
       idle-ttl-minutes: 30
