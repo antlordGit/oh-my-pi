@@ -1,0 +1,13 @@
+{
+  "name": "omp-ide-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "description": "IDE folder 解密反向代理：解密 AES 密文 folder 参数后反代到 code-server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "http-proxy": "^1.18.1"
+  }
+}

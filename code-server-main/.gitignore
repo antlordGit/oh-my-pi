@@ -8,7 +8,7 @@ release-images/
 node_modules
 /plugins
 /lib/coder-cloud-agent
-.home
+/home
 coverage
 **/.DS_Store
 *.bak
@@ -22,3 +22,19 @@ test/test-results
 # Quilt's internal data.
 /.pc
 /patches/*.diff~
+
+# OMP patch: 本仓库以 oh-my-pi-main 为主仓库的子目录统一管理,只提交源 + 配置。
+# 不提交大子模块/测试/补丁/文档/构建产物。
+/lib
+/test
+/ci
+/patches
+/docs
+/typings
+/.github
+/.tours
+/install.sh
+/flake.lock
+/flake.nix
+/renovate.json
+/eslint.config.mjs
