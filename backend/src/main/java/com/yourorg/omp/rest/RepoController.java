@@ -11,10 +11,15 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.URI;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -38,6 +43,165 @@ public class RepoController {
 
     public record CreateRepoRequest(String repoId, String displayName) {}
     public record CopyRepoRequest(String targetRepoId, String displayName) {}
+    public record CloneRequest(String repoId, String url, String branch, Integer depth, String username, String password) {}
+    public record InitRequest(String repoId, String template, String displayName) {}
+
+    /** git clone URL 允许的 scheme 白名单 */
+    private static final Set<String> ALLOWED_CLONE_SCHEMES = Set.of("http", "https", "git");
+
+    /** 克隆仓库：把远程仓库通过 {@code git clone} 拉取到用户工作区。 */
+    @PostMapping("/clone")
+    public Map<String, Object> clone(@RequestBody CloneRequest req) {
+        var self = currentUser.require();
+        Long uid = self.getId();
+        validateRepoIdOrThrow(req.repoId(), "仓库标识");
+        // 验证不含凭证的基础 URL
+        String baseUrl = stripCredentials(req.url());
+        validateCloneUrl(baseUrl);
+        if (repo.findByUserIdAndRepoId(uid, req.repoId()).isPresent()) {
+            throw new IllegalArgumentException("仓库已存在");
+        }
+        checkDiskQuota(self);
+
+        // 组装含凭证的 URL：https://user:pass@host/repo.git
+        String authUrl = baseUrl;
+        if (req.username() != null && !req.username().isBlank()) {
+            String user = encodeUriComponent(req.username());
+            String pass = req.password() != null ? ":" + encodeUriComponent(req.password()) : "";
+            URI u = URI.create(baseUrl);
+            String scheme = u.getScheme();
+            String auth = user + pass + "@";
+            String rebuilt = scheme + "://" + auth + u.getAuthority() + u.getPath();
+            if (u.getQuery() != null) rebuilt += "?" + u.getQuery();
+            if (u.getFragment() != null) rebuilt += "#" + u.getFragment();
+            authUrl = rebuilt;
+        }
+
+        Repo r = new Repo();
+        r.setUserId(uid);
+        r.setTenantId(self.getTenantId());
+        r.setRepoId(req.repoId());
+        r.setDisplayName(req.repoId());
+        r = repo.save(r);
+
+        try {
+            workspace.cloneRepository(uid, req.repoId(), authUrl, req.branch(), req.depth());
+        } catch (RuntimeException e) {
+            rollbackRepoCreation(uid, req.repoId(), r);
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
+        return toDto(r);
+    }
+
+    /**
+     * 初始化模板：把 classpath 下预置的前端 / 后端模板拷贝到用户工作区，
+     * 然后 git init 把模板作为首次 commit。
+     */
+    @PostMapping("/init")
+    public Map<String, Object> init(@RequestBody InitRequest req) {
+        var self = currentUser.require();
+        Long uid = self.getId();
+        validateRepoIdOrThrow(req.repoId(), "仓库标识");
+        if (req.template() == null
+                || !(req.template().equals("frontend") || req.template().equals("backend"))) {
+            throw new IllegalArgumentException("不支持的模板: " + req.template());
+        }
+        if (repo.findByUserIdAndRepoId(uid, req.repoId()).isPresent()) {
+            throw new IllegalArgumentException("仓库已存在");
+        }
+        checkDiskQuota(self);
+
+        Repo r = new Repo();
+        r.setUserId(uid);
+        r.setTenantId(self.getTenantId());
+        r.setRepoId(req.repoId());
+        r.setDisplayName(req.displayName() == null ? req.repoId() : req.displayName());
+        r = repo.save(r);
+
+        try {
+            workspace.initFromTemplate(uid, req.repoId(), req.template());
+        } catch (RuntimeException e) {
+            rollbackRepoCreation(uid, req.repoId(), r);
+            throw new IllegalArgumentException(e.getMessage(), e);
+        }
+        return toDto(r);
+    }
+
+    /**
+     * 克隆 / 模板初始化失败时的回滚：
+     * 1. 删半成品工作区目录（容忍"目录不存在"）
+     * 2. 删 DB Repo 行
+     */
+    private void rollbackRepoCreation(Long userId, String repoId, Repo r) {
+        try {
+            workspace.deleteWorkspace(userId, repoId);
+        } catch (Exception ignored) {
+            // deleteWorkspace 在目录不存在时会抛 IllegalArgumentException，忽略
+        }
+        try {
+            repo.delete(r);
+        } catch (Exception ignored) {
+            // 回滚 DB 失败只能记日志；事务边界外无法影响已 commit 的 Repo 行
+        }
+    }
+
+    private void validateRepoIdOrThrow(String repoId, String label) {
+        if (repoId == null || repoId.isBlank()) {
+            throw new IllegalArgumentException(label + "不能为空");
+        }
+        if (!REPO_ID_PATTERN.matcher(repoId).matches()) {
+            throw new IllegalArgumentException(label + "只能包含英文、数字和-，且不超过32位");
+        }
+    }
+
+    /**
+     * git clone URL 校验：
+     * 1. scheme 必须是 http / https / git
+     * 2. host 不能解析到 loopback / 私网 / link-local / 通配地址
+     * 3. 字面拦截 localhost / 127. 字面
+     */
+    private void validateCloneUrl(String url) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("Git URL 不能为空");
+        }
+        URI u;
+        try {
+            u = URI.create(url);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Git URL 格式非法: " + e.getMessage());
+        }
+        String scheme = u.getScheme();
+        if (scheme == null) {
+            throw new IllegalArgumentException("Git URL 缺少协议: " + url);
+        }
+        scheme = scheme.toLowerCase();
+        if (!ALLOWED_CLONE_SCHEMES.contains(scheme)) {
+            throw new IllegalArgumentException("不支持的协议: " + scheme);
+        }
+        String host = u.getHost();
+        if (host == null || host.isBlank()) {
+            throw new IllegalArgumentException("Git URL 缺少主机名");
+        }
+        // 字面兜底：防 DNS 不解析时绕开
+        String lower = host.toLowerCase();
+        if (lower.contains("localhost") || lower.contains("127.")) {
+            throw new IllegalArgumentException("不允许的 Git 主机: " + host);
+        }
+        try {
+            InetAddress[] addrs = InetAddress.getAllByName(host);
+            for (InetAddress addr : addrs) {
+                if (addr.isLoopbackAddress()
+                        || addr.isLinkLocalAddress()
+                        || addr.isAnyLocalAddress()) {
+                    throw new IllegalArgumentException("不允许的 Git 主机: " + host);
+                }
+            }
+        } catch (IllegalArgumentException re) {
+            throw re;
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Git 主机解析失败: " + host + " (" + e.getMessage() + ")");
+        }
+    }
 
     @GetMapping
     public List<Map<String, Object>> list() {
@@ -299,5 +463,28 @@ public class RepoController {
         m.put("displayName", r.getDisplayName());
         m.put("createdAt", r.getCreatedAt() == null ? null : r.getCreatedAt().toString());
         return m;
+    }
+
+    /** 从 URL 中剥离可能已有的 user:pass 认证信息。 */
+    private static String stripCredentials(String url) {
+        try {
+            URI u = URI.create(url);
+            if (u.getUserInfo() == null) return url;
+            String stripped = u.getScheme() + "://" + u.getHost();
+            if (u.getPort() > 0) stripped += ":" + u.getPort();
+            stripped += u.getPath();
+            if (u.getQuery() != null) stripped += "?" + u.getQuery();
+            if (u.getFragment() != null) stripped += "#" + u.getFragment();
+            return stripped;
+        } catch (Exception e) {
+            return url;
+        }
+    }
+
+    /** 对用户名 / 密码做 URI 编码，防止特殊字符破坏 URL 结构。 */
+    private static String encodeUriComponent(String s) {
+        return URLEncoder.encode(s, StandardCharsets.UTF_8)
+                .replace("+", "%20")
+                .replace("*", "%2A");
     }
 }

@@ -25,6 +25,7 @@ const state = ref<any>(null)
 const input = ref('')
 const sending = ref(false)
 const isStreaming = ref(false)
+const compacting = ref(false)
 const messagesEl = ref<HTMLElement | null>(null)
 
 // ========================================================================
@@ -576,6 +577,19 @@ async function doRewind() {
   finally { sending.value = false }
 }
 
+async function doCompact() {
+  if (sending.value || isStreaming.value || isArchived.value || compacting.value) return
+  const text = '/compact'
+  compacting.value = true
+  turnLog.value.push({ role: 'user', timeline: [], userText: text })
+  timeline.value = []; itemOrder = 0
+  Object.keys(toolCallById).forEach(k => delete toolCallById[k])
+  scrollToBottom()
+  try { await prompt(sessionId.value, text) }
+  catch (e: any) { msg.error(e?.response?.data?.error || '压缩失败') }
+  finally { compacting.value = false }
+}
+
 async function doNew() {
   if (sending.value || isStreaming.value || isArchived.value) return
   sending.value = true
@@ -889,6 +903,10 @@ async function copyRepoId() {
           <span class="caret">↺</span>
           <span>回退</span>
         </button>
+        <button class="btn-mini compact-btn" :disabled="sending || isStreaming || compacting" @click="doCompact">
+          <span class="caret">{{ compacting ? '◌' : '⊕' }}</span>
+          <span>{{ compacting ? '压缩中…' : '压缩' }}</span>
+        </button>
         <button class="btn-mini new-btn" :disabled="sending || isStreaming" @click="doNew">
           <span class="caret">+</span>
           <span>新对话</span>
@@ -899,6 +917,10 @@ async function copyRepoId() {
         <span class="rewind-hint"></span>
       </div>
       <div class="composer-toolbar" v-else>
+        <button class="btn-mini compact-btn" :disabled="sending || isStreaming || compacting" @click="doCompact">
+          <span class="caret">{{ compacting ? '◌' : '⊕' }}</span>
+          <span>{{ compacting ? '压缩中…' : '压缩' }}</span>
+        </button>
         <button class="btn-mini new-btn" :disabled="sending || isStreaming" @click="doNew">
           <span class="caret">+</span>
           <span>新对话</span>
@@ -1544,6 +1566,21 @@ async function copyRepoId() {
 }
 .new-btn:hover:not(:disabled) { color: var(--brand); border-color: var(--brand); }
 .new-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.compact-btn {
+  padding: 4px 12px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--ink-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.compact-btn:hover:not(:disabled) { color: var(--brand); border-color: var(--brand); }
+.compact-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .rewind-hint { font-size: 11px; }
 
 .composer-input {

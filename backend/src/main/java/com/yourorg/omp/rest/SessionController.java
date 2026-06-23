@@ -190,13 +190,6 @@ public class SessionController {
         return result;
     }
 
-    @PostMapping("/{sessionId}/compact")
-    public JsonNode compact(@PathVariable String sessionId, @RequestBody(required = false) Map<String, String> body) throws Exception {
-        SessionMeta m = require(sessionId);
-        String instr = body == null ? null : body.get("customInstructions");
-        return sessions.sendCommand(m, instr != null ? RpcCommands.compact(instr) : RpcCommands.compact()).get();
-    }
-
     @PostMapping("/{sessionId}/archive")
     public Map<String, Object> archive(@PathVariable String sessionId) {
         SessionMeta m = require(sessionId);

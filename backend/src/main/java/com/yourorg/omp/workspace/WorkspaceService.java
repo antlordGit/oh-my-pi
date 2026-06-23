@@ -10,10 +10,12 @@ import org.springframework.stereotype.Service;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.security.CodeSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -303,6 +305,16 @@ public class WorkspaceService {
             throw new IOException("文件不存在: " + relativePath);
         }
         Files.writeString(file, content);
+
+        // 同步写入 agent-root 根目录：编辑项目根目录的 mcp.json / APPEND_SYSTEM.md 后，
+        // 自动将内容同步到 agentRoot/ 下，使全局 OMP 进程感知变更。
+        String fileName = Path.of(relativePath).getFileName().toString();
+        if ("mcp.json".equals(fileName) || "APPEND_SYSTEM.md".equals(fileName)) {
+            Path agentFile = props.agentRoot().resolve(fileName);
+            Files.createDirectories(agentFile.getParent());
+            Files.writeString(agentFile, content);
+            log.info("Synced {} to agent-root {}", fileName, agentFile);
+        }
     }
 
     public String diff(Long userId, String repoId, String refA, String refB) {
@@ -398,6 +410,205 @@ public class WorkspaceService {
             log.info("Deleted workspace {} for user {}", repoId, userId);
         } catch (IOException e) {
             throw new RuntimeException("删除工作区失败", e);
+        }
+    }
+
+    // ========================================================================
+    // 会话创建三策略：cloneRepository / initFromTemplate / copyResourceDir
+    // ========================================================================
+
+    /**
+     * 通过 {@code git clone} 把远程仓库拉取到用户工作区。
+     *
+     * <p>不走 {@link #userWorkspace} 的 git init 副作用——clone 目标目录必须是空目录。
+     * 当前仅支持匿名 / 公网 https：Controller 层做 scheme 白名单 + SSRF 防护，
+     * 此处再追加 {@code --config credential.helper=} 禁用交互凭证避免挂死。
+     *
+     * @param userId  仓库归属用户
+     * @param repoId  新仓库标识
+     * @param url     远程仓库 URL（已通过 Controller 校验）
+     * @param branch  可选分支
+     * @param depth   可选 --depth 值
+     * @return 新建的工作区目录
+     * @throws IOException      git 进程失败或非零退出
+     * @throws RuntimeException 超时（>180s）或目标目录已存在
+     */
+    public Path cloneRepository(Long userId, String repoId, String url, String branch, Integer depth) {
+        validateRepoId(repoId);
+        String username = resolveUsername(userId);
+        Path parent = props.workspacesRoot().resolve(username);
+        Path target = parent.resolve(repoId);
+        if (Files.exists(target)) {
+            throw new IllegalArgumentException("目标目录已存在: " + target);
+        }
+        try {
+            Files.createDirectories(parent);
+
+            List<String> args = new ArrayList<>();
+            args.add("git");
+            args.add("clone");
+            if (depth != null && depth > 0) {
+                args.add("--depth");
+                args.add(String.valueOf(depth));
+            }
+            if (branch != null && !branch.isBlank()) {
+                args.add("--branch");
+                args.add(branch);
+            }
+            args.add("--single-branch");
+            // 禁用交互凭证：私有仓库直接失败而不是挂死等待 stdin
+            args.add("--config");
+            args.add("credential.helper=");
+            args.add(url);
+            args.add(target.toString());
+
+            log.info("[clone] user={} repo={} url={} branch={} depth={}", userId, repoId, url, branch, depth);
+            ProcessBuilder pb = new ProcessBuilder(args)
+                    .directory(parent.toFile())
+                    .redirectErrorStream(true);
+            Process p = pb.start();
+            byte[] out;
+            boolean done;
+            try {
+                out = p.getInputStream().readAllBytes();
+                done = p.waitFor(180, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                p.destroyForcibly();
+                throw new RuntimeException("克隆被中断", e);
+            }
+            if (!done) {
+                p.destroyForcibly();
+                throw new RuntimeException("克隆超时（>180s）: " + url);
+            }
+            int code = p.exitValue();
+            String stderr = new String(out, StandardCharsets.UTF_8);
+            if (code != 0) {
+                throw new IOException("克隆失败 (exit=" + code + "): " + stderr.trim());
+            }
+
+            // 把 HEAD 重命名为 main（保持与 initGitIfNeeded 一致）
+            try {
+                runGit(target, "branch", "-M", "main");
+            } catch (Exception e) {
+                // remote HEAD 可能已叫 main，重命名失败不影响主流程
+                log.debug("[clone] branch -M main skipped: {}", e.getMessage());
+            }
+            log.info("[clone] success user={} repo={} path={}", userId, repoId, target);
+            return target;
+        } catch (IOException e) {
+            // 失败时尽量清掉半成品目录
+            try {
+                if (Files.exists(target)) {
+                    deleteWorkspace(userId, repoId);
+                }
+            } catch (Exception ignored) {
+                // 清理失败不掩盖原始错误
+            }
+            throw new RuntimeException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 把 classpath 下的内置模板拷贝到用户工作区，然后 git init 把模板作为首次 commit。
+     *
+     * <p>模板固定为 {@code templates/frontend} 或 {@code templates/backend}，
+     * 由 Controller 层做枚举校验，此处二次防御。
+     *
+     * @param userId   仓库归属用户
+     * @param repoId   新仓库标识
+     * @param template "frontend" 或 "backend"
+     * @return 新建的工作区目录
+     */
+    public Path initFromTemplate(Long userId, String repoId, String template) {
+        validateRepoId(repoId);
+        String base = switch (template) {
+            case "frontend" -> "templates/frontend";
+            case "backend" -> "templates/backend";
+            default -> throw new IllegalArgumentException("不支持的模板: " + template);
+        };
+
+        String username = resolveUsername(userId);
+        Path parent = props.workspacesRoot().resolve(username);
+        Path target = parent.resolve(repoId);
+        if (Files.exists(target)) {
+            throw new IllegalArgumentException("目标目录已存在: " + target);
+        }
+        try {
+            Files.createDirectories(parent);
+            Files.createDirectories(target);
+            copyResourceDir(base, target);
+            // 模板自带 README.md / package.json / pom.xml，作为首次 commit 内容
+            initGitIfNeeded(target);
+            log.info("[init-template] user={} repo={} template={} path={}", userId, repoId, template, target);
+            return target;
+        } catch (IOException e) {
+            try {
+                if (Files.exists(target)) {
+                    deleteWorkspace(userId, repoId);
+                }
+            } catch (Exception ignored) {
+            }
+            throw new RuntimeException("初始化模板失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 把 classpath 下的目录树拷贝到目标路径。
+     *
+     * <p>使用 {@link CodeSource} 限定根（dev 期是 {@code target/classes}，jar 期是 jar 内），
+     * 避免 {@code getResourceAsStream("/" + base)} 类写法被注入 {@code ../../}。
+     * 遍历时校验每条 entry 的相对路径必须以 {@code classpathBase + "/"} 开头。
+     *
+     * <p>模板目录跳过 {@code .git} / {@code target} / {@code node_modules} 等构建产物。
+     */
+    private void copyResourceDir(String classpathBase, Path target) throws IOException {
+        CodeSource src = WorkspaceService.class.getProtectionDomain().getCodeSource();
+        if (src == null || src.getLocation() == null) {
+            throw new IOException("无法定位 classpath 根目录");
+        }
+        Path root;
+        try {
+            root = Path.of(src.getLocation().toURI());
+        } catch (Exception e) {
+            throw new IOException("无法解析 classpath 根目录 URI: " + e.getMessage(), e);
+        }
+        Path baseDir = root.resolve(classpathBase);
+        if (!Files.exists(baseDir)) {
+            throw new IOException("模板目录不存在: " + classpathBase);
+        }
+        List<Path> entries = new ArrayList<>();
+        try (Stream<Path> walk = Files.walk(baseDir)) {
+            walk.forEach(entries::add);
+        }
+        for (Path srcPath : entries) {
+            Path rel = baseDir.relativize(srcPath);
+            String relStr = rel.toString().replace('\\', '/');
+            // 白名单校验：防止相对路径逃逸
+            if (relStr.contains("..")) {
+                throw new IOException("非法模板路径: " + relStr);
+            }
+            // 跳过常见构建产物目录（保留 .gitignore / .gitkeep 等点文件）
+            boolean skip = false;
+            for (Path seg : rel) {
+                String name = seg.toString();
+                if (Set.of(".git", "node_modules", "target", "dist", "build").contains(name)) {
+                    skip = true;
+                    break;
+                }
+            }
+            if (skip) continue;
+
+            Path dest = target.resolve(rel).normalize();
+            if (!dest.startsWith(target)) {
+                throw new IOException("模板路径越界: " + relStr);
+            }
+            if (Files.isDirectory(srcPath)) {
+                Files.createDirectories(dest);
+            } else {
+                Files.createDirectories(dest.getParent());
+                Files.copy(srcPath, dest, StandardCopyOption.COPY_ATTRIBUTES);
+            }
         }
     }
 

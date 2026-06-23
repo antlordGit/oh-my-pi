@@ -3,6 +3,7 @@ package com.yourorg.omp.rest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.yourorg.omp.admin.AdminConfigService;
 import com.yourorg.omp.audit.AuditService;
+import com.yourorg.omp.config.OmpProperties;
 import com.yourorg.omp.pool.ProcessPool;
 import com.yourorg.omp.repo.PromptAuditRepository;
 import com.yourorg.omp.repo.ResponseAuditRepository;
@@ -14,21 +15,28 @@ import com.yourorg.omp.security.CurrentUser;
 import com.yourorg.omp.entity.User;
 import com.yourorg.omp.session.SessionManager;
 import jakarta.validation.constraints.NotBlank;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/admin")
 public class AdminController {
 
+    private static final Logger log = LoggerFactory.getLogger(AdminController.class);
     private final AdminConfigService config;
     private final UserRepository users;
     private final JwtService jwt;
@@ -41,13 +49,16 @@ public class AdminController {
     private final AuditService audit;
     private final CurrentUser currentUser;
     private final com.yourorg.omp.maintenance.MaintenanceService maintenance;
+    private final OmpProperties props;
+    private static final Set<String> ALLOWED_SYSTEM_FILES = Set.of("mcp.json", "APPEND_SYSTEM.md");
 
     public AdminController(AdminConfigService config, UserRepository users, JwtService jwt,
                            SessionMetaRepository sessions, SessionManager sessionManager, ProcessPool pool,
                            PromptAuditRepository prompts, ToolAuditRepository tools,
                            ResponseAuditRepository responses, AuditService audit,
                            CurrentUser currentUser,
-                           com.yourorg.omp.maintenance.MaintenanceService maintenance) {
+                           com.yourorg.omp.maintenance.MaintenanceService maintenance,
+                           OmpProperties props) {
         this.config = config;
         this.users = users;
         this.jwt = jwt;
@@ -60,6 +71,7 @@ public class AdminController {
         this.audit = audit;
         this.currentUser = currentUser;
         this.maintenance = maintenance;
+        this.props = props;
     }
 
     // ---- config ----
@@ -351,5 +363,58 @@ public class AdminController {
                 "total", items.size(),
                 "canStop", items.isEmpty()
         );
+    }
+
+    // ---- system-files ----
+
+    /** 列出允许通过此接口编辑的系统文件名 */
+    @GetMapping("/system-files")
+    public Map<String, Object> listSystemFiles() {
+        return Map.of(
+                "agentRoot", props.agentRoot().toString(),
+                "files", ALLOWED_SYSTEM_FILES.stream()
+                        .map(name -> Map.of(
+                                "name", name,
+                                "path", props.agentRoot().resolve(name).toString()
+                        ))
+                        .toList()
+        );
+    }
+
+    /** 读取 agent-root 下的系统文件内容 */
+    @GetMapping("/system-files/{filename}")
+    public Map<String, Object> readSystemFile(@PathVariable String filename) {
+        if (!ALLOWED_SYSTEM_FILES.contains(filename)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的文件: " + filename);
+        }
+        Path file = props.agentRoot().resolve(filename);
+        try {
+            if (!Files.isRegularFile(file)) {
+                return Map.of("name", filename, "path", file.toString(), "content", "", "exists", false);
+            }
+            String content = Files.readString(file);
+            return Map.of("name", filename, "path", file.toString(), "content", content, "exists", true);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "读取失败: " + e.getMessage());
+        }
+    }
+
+    /** 写入 agent-root 下的系统文件内容 */
+    @PutMapping("/system-files/{filename}")
+    public Map<String, Object> writeSystemFile(@PathVariable String filename, @RequestBody Map<String, String> body) {
+        if (!ALLOWED_SYSTEM_FILES.contains(filename)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的文件: " + filename);
+        }
+        String content = body.get("content");
+        if (content == null) throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "content is required");
+        Path file = props.agentRoot().resolve(filename);
+        try {
+            Files.createDirectories(file.getParent());
+            Files.writeString(file, content);
+            log.info("Admin wrote system file: {} ({} bytes)", filename, content.length());
+            return Map.of("ok", true, "name", filename, "path", file.toString());
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "写入失败: " + e.getMessage());
+        }
     }
 }

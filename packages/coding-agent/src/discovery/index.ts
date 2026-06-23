@@ -19,6 +19,7 @@ import "../capability/slash-command";
 import "../capability/ssh";
 import "../capability/system-prompt";
 import "../capability/tool";
+import "../capability/append-system-prompt";
 // Import providers (each registers itself on import)
 import "./agents-md";
 import "./builtin";
@@ -37,6 +38,7 @@ import "./omp-plugins";
 import "./ssh";
 import "./vscode";
 import "./windsurf";
+import "./system-env";
 
 // Re-export the main API from capability registry
 export {
@@ -62,6 +64,7 @@ export {
 	reset,
 	setDisabledProviders,
 } from "../capability";
+export type { AppendSystemPrompt } from "../capability/append-system-prompt";
 export type { ContextFile } from "../capability/context-file";
 export type { Extension, ExtensionManifest } from "../capability/extension";
 export type { ExtensionModule } from "../capability/extension-module";

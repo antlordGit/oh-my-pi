@@ -60,9 +60,9 @@ app:
       api-key: ${OMP_API_KEY:}
     ide:
       enabled: ${OMP_IDE_ENABLED:true}
-      public-base-url: ${OMP_IDE_PUBLIC_BASE_URL:http://localhost:3000}
-      # HMAC-SHA256 签名 key,64 个 hex 字符 (32 字节)。空 → 不加签名,folder 原样拼接。
-      signing-key: ${OMP_IDE_SIGNING_KEY:}
+      public-base-url: ${OMP_IDE_PUBLIC_BASE_URL:http://localhost:9090}
+      # HMAC-SHA256 签名 key,64 个 hex 字符 (32 字节)。空 → 不加签名,folder 原样拼接。 openssl rand -hex 32
+      signing-key: ${OMP_IDE_SIGNING_KEY:6d027e57b534087e44c59886d602bd097e5c0f175b6db8cf9c7e81de40abaf67}
 
 logging:
   level:

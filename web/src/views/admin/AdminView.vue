@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, computed, watch, defineProps, onUnmounted } from 'vue'
+import { onMounted, ref, computed, watch, reactive, defineProps, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useMessage, useDialog, NPagination } from 'naive-ui'
@@ -91,6 +91,78 @@ function selectKey(key: string) {
   const def = getConfigDef(key)
   newKeySearch.value = def ? `${def.label} (${key})` : key
   showKeyDropdown.value = false
+}
+
+// ---- system files ----
+const sysFiles = reactive({
+  loading: false,
+  files: [] as { name: string; path: string; content: string; exists: boolean }[],
+  editing: null as string | null,
+  editContent: '',
+  saving: null as string | null,
+})
+
+async function loadSysFiles() {
+  sysFiles.loading = true
+  try {
+    const r = await api.get('/admin/system-files')
+    const fileList = r.data.files as { name: string; path: string }[]
+    const contents = await Promise.all(
+      fileList.map(f => api.get(`/admin/system-files/${encodeURIComponent(f.name)}`))
+    )
+    sysFiles.files = contents.map((r, i) => ({
+      name: fileList[i]!.name,
+      path: fileList[i]!.path,
+      content: r.data.content || '',
+      exists: r.data.exists,
+    }))
+  } catch (e: any) {
+    msg.error(e?.response?.data?.error || '加载系统文件失败')
+  } finally {
+    sysFiles.loading = false
+  }
+}
+
+function startSysFileEdit(name: string) {
+  const f = sysFiles.files.find(f => f.name === name)
+  if (!f) return
+  sysFiles.editing = name
+  sysFiles.editContent = f.content
+}
+
+function cancelSysFileEdit() {
+  sysFiles.editing = null
+  sysFiles.editContent = ''
+}
+
+async function saveSysFile(name: string) {
+  if (sysFiles.saving) return
+  // 二次确认
+  const ok = await new Promise<boolean>(resolve => {
+    dialog.warning({
+      title: '保存系统文件',
+      content: `确认写入 ${name} 到 agent-root？此操作不可撤销，仅对新进程生效。`,
+      positiveText: '确认保存',
+      negativeText: '取消',
+      onPositiveClick: () => resolve(true),
+      onNegativeClick: () => resolve(false),
+      onClose: () => resolve(false),
+    })
+  })
+  if (!ok) return
+  sysFiles.saving = name
+  try {
+    await api.put(`/admin/system-files/${encodeURIComponent(name)}`, { content: sysFiles.editContent })
+    const f = sysFiles.files.find(f => f.name === name)
+    if (f) f.content = sysFiles.editContent
+    sysFiles.editing = null
+    sysFiles.editContent = ''
+    msg.success(`${name} 已保存到 agent-root`)
+  } catch (e: any) {
+    msg.error(e?.response?.data?.error || '保存系统文件失败')
+  } finally {
+    sysFiles.saving = null
+  }
 }
 
 /**
@@ -315,7 +387,7 @@ function clearOverride(id: string) {
   const m = loadOverrides(); delete m[id]; saveOverrides(m)
 }
 
-async function loadAll() { await Promise.all([loadConfig(), loadSessions(), loadAudit(), loadMaintenanceStatus()]) }
+async function loadAll() { await Promise.all([loadConfig(), loadSessions(), loadAudit(), loadMaintenanceStatus(), loadSysFiles()]) }
 
 /** Group audit items by sessionId, each group sorted by time descending. */
 const auditGroups = computed(() => {
@@ -843,6 +915,32 @@ onMounted(() => {
             默认值: <code>{{ currentConfigDef.defaultValue }}</code>
           </p>
         </div>
+      </div>
+      <!-- 系统文件 -->
+      <div v-permission="'omp:config:edit'" class="card cfg-add">
+        <div class="cfg-add-head">
+          <span class="tag">系统文件</span>
+        </div>
+        <h3 class="cfg-add-title">编辑<strong>全局系统文件</strong></h3>
+        <p class="cfg-add-desc">编辑 agent-root 下的 mcp.json / APPEND_SYSTEM.md，保存后对新进程生效</p>
+        <div v-if="sysFiles.loading" class="cfg-info-desc">加载中…</div>
+        <template v-else>
+          <div v-for="f in sysFiles.files" :key="f.name" class="sys-file-row">
+            <code class="mono sys-file-name">{{ f.name }}</code>
+            <span class="mono dim sys-file-path">{{ f.path }}</span>
+            <template v-if="sysFiles.editing === f.name">
+              <textarea v-model="sysFiles.editContent" class="field-raw sys-file-edit" rows="8" />
+              <div class="sys-file-actions">
+                <button class="btn-primary" :disabled="sysFiles.saving === f.name" @click="saveSysFile(f.name)">{{ sysFiles.saving === f.name ? '保存中…' : '保存' }}</button>
+                <button class="btn-ghost" @click="cancelSysFileEdit">取消</button>
+              </div>
+            </template>
+            <template v-else>
+              <pre class="cfg-body mono sys-file-preview">{{ f.content || '(空文件)' }}</pre>
+              <button class="btn-ghost btn-xs" @click="startSysFileEdit(f.name)">编辑</button>
+            </template>
+          </div>
+        </template>
       </div>
     </section>
 
@@ -1949,5 +2047,37 @@ onMounted(() => {
 .streaming-table .row > :nth-child(5) { flex: 0 0 120px; }
 .streaming-table .row:last-child { border-bottom: none; }
 .streaming-table .row.head { background: var(--surface-soft); font-size: 12px; }
+
+.sys-file-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.sys-file-row:first-child { border-top: none; }
+.sys-file-name { font-size: 13px; font-weight: 600; color: var(--brand); }
+.sys-file-path { font-size: 10px; color: var(--ink-faint); word-break: break-all; }
+.sys-file-preview {
+  font-size: 11px;
+  max-height: 120px;
+  overflow: auto;
+  background: var(--surface-soft);
+  border-radius: 6px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.sys-file-edit {
+  width: 100%;
+  font-size: 12px;
+  resize: vertical;
+  min-height: 120px;
+}
+.sys-file-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
 
 </style>
