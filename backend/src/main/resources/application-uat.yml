@@ -24,6 +24,14 @@ app:
     workspaces-root: ${OMP_WORKSPACES_ROOT:/data/omp/workspaces}
     agent-root: ${OMP_AGENT_ROOT:/data/omp/agent}
     stderr-log-dir: ${OMP_STDERR_LOG_DIR:/data/omp/logs}
+    # 全局 APPEND_SYSTEM 模板，与 <agentDir>/APPEND_SYSTEM.user.md 合并生成 APPEND_SYSTEM.md
+    append-system-template-path: ${OMP_APPEND_SYSTEM_TEMPLATE:/etc/omp/APPEND_SYSTEM.md}
+    # 共享 agent 根目录（运维统一管理 extensions/skills/hooks/tools 的入口）
+    shared-agent-root: ${OMP_SHARED_AGENT_ROOT:/data/omp/agent}
+    # 启用 skills 加载（推荐 true）。false 时追加 --no-skills。
+    enable-skills: ${OMP_ENABLE_SKILLS:true}
+    # 禁用 rules 加载（CLAUDE.md / AGENTS.md），安全考虑。
+    enable-rules: ${OMP_ENABLE_RULES:false}
     pool:
       max-concurrent: 10
       idle-ttl-minutes: 30

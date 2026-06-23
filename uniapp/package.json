@@ -1,0 +1,45 @@
+{
+  "name": "omp-uniapp",
+  "version": "0.1.0",
+  "description": "OMP coding workstation - uni-app port (multi-platform mini-programs + iOS/Android App)",
+  "private": true,
+  "packageManager": "yarn@1.22.22",
+  "scripts": {
+    "dev:h5": "uni",
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "dev:mp-alipay": "uni -p mp-alipay",
+    "dev:mp-toutiao": "uni -p mp-toutiao",
+    "dev:mp-baidu": "uni -p mp-baidu",
+    "dev:app": "uni -p app",
+    "build:h5": "uni build",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "build:mp-alipay": "uni build -p mp-alipay",
+    "build:mp-toutiao": "uni build -p mp-toutiao",
+    "build:mp-baidu": "uni build -p mp-baidu",
+    "build:app": "uni build -p app",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "vue3",
+    "@dcloudio/uni-app-plus": "vue3",
+    "@dcloudio/uni-h5": "vue3",
+    "@dcloudio/uni-mp-alipay": "vue3",
+    "@dcloudio/uni-mp-baidu": "vue3",
+    "@dcloudio/uni-mp-toutiao": "vue3",
+    "@dcloudio/uni-mp-weixin": "vue3",
+    "markdown-it": "^14.1.0",
+    "mp-html": "^2.5.0",
+    "pinia": "2.0.36",
+    "uview-plus": "^3.4.4",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.8",
+    "@dcloudio/vite-plugin-uni": "vue3",
+    "@types/markdown-it": "^14.1.2",
+    "sass": "^1.77.6",
+    "typescript": "^5.4.5",
+    "vite": "^7.0.0",
+    "vue-tsc": "^2.0.13"
+  }
+}

@@ -1,0 +1,434 @@
+// ====================================================================
+// OMP Design System — Design Tokens
+// Ported from H5/src/styles/design-system.css
+// Supports dark (default) and light themes via .theme-dark / .theme-light
+// on the root <view> wrapper.
+// ====================================================================
+
+// ------ Typography ------
+$font-display: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC",
+  "Noto Sans SC", "Microsoft YaHei", "Inter", system-ui, -apple-system,
+  sans-serif;
+$font-ui: "PingFang SC", "HarmonyOS Sans SC", "Source Han Sans SC",
+  "Noto Sans SC", "Microsoft YaHei", "Inter", system-ui, -apple-system,
+  sans-serif;
+$font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+
+// ------ Spacing Scales ------
+$radius: 12px;
+$radius-sm: 8px;
+$radius-xs: 6px;
+$radius-pill: 9999px;
+$radius-card: 20px;
+
+// ------ Duration / Easing ------
+$dur-fast: 200ms;
+$dur-base: 360ms;
+$dur-slow: 600ms;
+$ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+$ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+
+// ------ CSS Custom Properties (applied at the class level) ------
+
+// Dark theme (default)
+.theme-dark {
+  --canvas: #08090b;
+  --surface: #0d0f12;
+  --surface-soft: #111318;
+  --surface-hover: #1a1d24;
+  --surface-blue: rgba(0, 229, 255, 0.04);
+  --border: #1a1d24;
+  --border-strong: #252830;
+  --border-soft: rgba(0, 229, 255, 0.12);
+  --brand: #00e5ff;
+  --brand-hover: #33ebff;
+  --brand-pressed: #00b8d4;
+  --brand-soft: rgba(0, 229, 255, 0.08);
+  --brand-soft-2: rgba(0, 229, 255, 0.14);
+  --brand-deep: #00b8d4;
+  --ink: #e8eaed;
+  --ink-2: #8b919d;
+  --ink-mute: #5a5f6b;
+  --ink-faint: #2a2d34;
+  --ink-invert: #08090b;
+  --good: #00e676;
+  --good-soft: rgba(0, 230, 118, 0.1);
+  --warn: #ffb020;
+  --warn-soft: rgba(255, 176, 32, 0.1);
+  --danger: #f85252;
+  --danger-soft: rgba(248, 82, 82, 0.1);
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);
+  --shadow-hover: 0 6px 20px rgba(0, 0, 0, 0.4);
+  --shadow-brand: 0 6px 20px rgba(0, 229, 255, 0.15);
+  --shadow-focus: 0 0 0 3px rgba(0, 229, 255, 0.2);
+
+  // Aliases
+  --fg: var(--ink);
+  --fg-mute: var(--ink-2);
+  --fg-dim: var(--ink-mute);
+  --fg-faint: var(--ink-faint);
+  --bg: var(--canvas);
+  --bg-soft: var(--surface-soft);
+  --line-soft: var(--border);
+  --line: var(--border-strong);
+  --line-bold: var(--ink-mute);
+  --bronze: var(--warn);
+
+  // Font family shortcuts
+  --font-display: #{$font-display};
+  --font-ui: #{$font-ui};
+  --font-mono: #{$font-mono};
+
+  // Radius shortcuts
+  --radius: #{$radius};
+  --radius-sm: #{$radius-sm};
+  --radius-xs: #{$radius-xs};
+  --radius-pill: #{$radius-pill};
+  --radius-card: #{$radius-card};
+
+  // Duration / easing shortcuts
+  --dur-fast: #{$dur-fast};
+  --dur-base: #{$dur-base};
+  --dur-slow: #{$dur-slow};
+  --ease-out: #{$ease-out};
+  --ease-spring: #{$ease-spring};
+}
+
+// Light theme
+.theme-light {
+  --canvas: #ffffff;
+  --surface: #ffffff;
+  --surface-soft: #f7f8fa;
+  --surface-hover: #f2f3f5;
+  --surface-blue: #f2f5ff;
+  --border: #e5e6eb;
+  --border-strong: #c9cdd4;
+  --border-soft: rgba(22, 93, 255, 0.16);
+  --brand: #165dff;
+  --brand-hover: #0e49d6;
+  --brand-pressed: #0a3db8;
+  --brand-soft: rgba(22, 93, 255, 0.08);
+  --brand-soft-2: rgba(22, 93, 255, 0.14);
+  --brand-deep: #0a3db8;
+  --ink: #1d2129;
+  --ink-2: #4e5969;
+  --ink-mute: #86909c;
+  --ink-faint: #c9cdd4;
+  --ink-invert: #ffffff;
+  --good: #00b42a;
+  --good-soft: rgba(0, 180, 42, 0.1);
+  --warn: #ff7d00;
+  --warn-soft: rgba(255, 125, 0, 0.1);
+  --danger: #f53f3f;
+  --danger-soft: rgba(245, 63, 63, 0.1);
+  --shadow-card: 0 2px 8px rgba(29, 33, 41, 0.06);
+  --shadow-hover: 0 6px 20px rgba(29, 33, 41, 0.1);
+  --shadow-brand: 0 6px 20px rgba(22, 93, 255, 0.24);
+  --shadow-focus: 0 0 0 3px rgba(22, 93, 255, 0.2);
+
+  // Aliases
+  --fg: var(--ink);
+  --fg-mute: var(--ink-2);
+  --fg-dim: var(--ink-mute);
+  --fg-faint: var(--ink-faint);
+  --bg: var(--canvas);
+  --bg-soft: var(--surface-soft);
+  --line-soft: var(--border);
+  --line: var(--border-strong);
+  --line-bold: var(--ink-mute);
+  --bronze: var(--warn);
+
+  --font-display: #{$font-display};
+  --font-ui: #{$font-ui};
+  --font-mono: #{$font-mono};
+
+  --radius: #{$radius};
+  --radius-sm: #{$radius-sm};
+  --radius-xs: #{$radius-xs};
+  --radius-pill: #{$radius-pill};
+  --radius-card: #{$radius-card};
+
+  --dur-fast: #{$dur-fast};
+  --dur-base: #{$dur-base};
+  --dur-slow: #{$dur-slow};
+  --ease-out: #{$ease-out};
+  --ease-spring: #{$ease-spring};
+}
+
+// ------ Global Reset: apply to page element ------
+// 注意：小程序的 page 标签不支持 CSS 变量继承（.theme-* 在子 view 上）。
+// 这里用硬编码的 dark 默认色（本应用默认暗色主题），实际内容由各页面根 <view class="page theme-*"> 撑满。
+page {
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  background: #08090b; // fallback dark canvas
+  color: #e8eaed;      // fallback dark ink
+  font-family: $font-ui;
+  font-size: 15px;
+  line-height: 1.6;
+  overflow-x: hidden;
+  box-sizing: border-box;
+}
+view,
+text,
+scroll-view,
+swiper,
+movable-view,
+cover-view {
+  box-sizing: border-box;
+}
+
+// ------ Utility classes ------
+
+// Display heading
+.display {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin: 0;
+  color: var(--ink);
+}
+
+// Monospace text
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+// Serial — uppercase mono label
+.serial {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--ink-mute);
+  text-transform: uppercase;
+}
+
+// Card surface
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+// Eyebrow
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  align-self: flex-start;
+}
+.eyebrow::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--brand);
+}
+
+// Dotline fill separator
+.dotline-fill {
+  flex: 1;
+  min-width: 16px;
+  height: 0;
+  border-top: 1px dashed var(--border);
+  align-self: center;
+}
+
+// Field raw input (base style — uView inputs also inherit these defaults)
+.field-raw {
+  width: 100%;
+  height: 44px;
+  padding: 0 14px;
+  font-family: var(--font-ui);
+  font-size: 15px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  transition: border-color var(--dur-fast) var(--ease-out);
+}
+.field-raw:focus {
+  border-color: var(--brand);
+  box-shadow: var(--shadow-focus);
+}
+
+// Tag pill
+.tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.tag--brand {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.tag--good {
+  background: var(--good-soft);
+  color: var(--good);
+}
+.tag--warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+.tag--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.tag--ink {
+  background: var(--surface-soft);
+  color: var(--ink-2);
+}
+
+// Primary CTA button
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 24px;
+  border-radius: var(--radius-pill);
+  border: none;
+  background: var(--brand);
+  color: var(--ink-invert);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.btn-primary:active {
+  background: var(--brand-pressed);
+  box-shadow: var(--shadow-focus);
+}
+.btn-primary:disabled {
+  opacity: 0.45;
+}
+
+// Ghost button (outline)
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.btn-ghost:active {
+  border-color: var(--brand);
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+// Mini danger button
+.btn-mini-danger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--danger-soft);
+  background: transparent;
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--dur-fast) var(--ease-out);
+}
+.btn-mini-danger:active {
+  background: var(--danger-soft);
+  border-color: var(--danger);
+}
+
+// ------ Animations ------
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes gentle-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 0.2;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+// Animation utility classes
+.fade-up {
+  animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+
+.cursor-blink {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--brand);
+  animation: blink 1s steps(2, start) infinite;
+  vertical-align: text-bottom;
+  margin-left: 2px;
+}
+
+.live-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--brand);
+  animation: gentle-pulse 2s ease-in-out infinite;
+}

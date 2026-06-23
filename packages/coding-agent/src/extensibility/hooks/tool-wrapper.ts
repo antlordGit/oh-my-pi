@@ -11,7 +11,7 @@ import type { ToolCallEventResult, ToolResultEventResult } from "./types";
  * Wraps an AgentTool with hook callbacks for interception.
  *
  * Features:
- * - Emits tool_call event before execution (can block)
+ * - Emits tool_call event before execution (can block or rewrite input)
  * - Emits tool_result event after execution (can modify result)
  * - Forwards onUpdate callback to wrapped tool for progress streaming
  */
@@ -38,7 +38,7 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	) {
-		// Emit tool_call event - hooks can block execution
+		// Emit tool_call event - hooks can block execution or rewrite input
 		// If hook errors/times out, block by default (fail-safe)
 		if (this.hookRunner.hasHandlers("tool_call")) {
 			try {
@@ -52,6 +52,11 @@ export class HookToolWrapper<TParameters extends TSchema = TSchema, TDetails = u
 				if (callResult?.block) {
 					const reason = callResult.reason || "Tool execution was blocked by a hook";
 					throw new Error(reason);
+				}
+
+				// Hook can rewrite input parameters (e.g., wrap commands with rtk)
+				if (callResult?.updatedInput) {
+					params = callResult.updatedInput as Static<TParameters>;
 				}
 			} catch (err) {
 				// Hook error or block - throw to mark as error

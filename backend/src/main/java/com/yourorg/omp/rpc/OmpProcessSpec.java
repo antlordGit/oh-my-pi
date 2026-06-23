@@ -34,7 +34,13 @@ public record OmpProcessSpec(
         String provider,
         String modelId,
         String baseUrl,
-        String api  // e.g. "anthropic-messages", "openai-completions"
+        String api,  // e.g. "anthropic-messages", "openai-completions"
+        // 是否启用 skills 加载。false 时追加 --no-skills 跳过 omp 的 skill 发现。
+        // 默认 true（启用），便于加载运维在 /data/omp/agent/skills/ 共享的 skill 集合。
+        boolean enableSkills,
+        // 是否启用 rules（CLAUDE.md / AGENTS.md）加载。false 时追加 --no-rules 跳过。
+        // 默认 false，保持原行为不变（用户工作区内 rules 不应污染 omp 会话）。
+        boolean enableRules
 ) {
     public OmpProcessSpec {
         env = env == null ? Map.of() : Map.copyOf(env);
@@ -70,19 +76,43 @@ public record OmpProcessSpec(
             argv.add("--tools");
             argv.add(String.join(",", tools));
         }
-        // Don't auto-load CLAUDE.md / AGENTS.md from upper directories — those belong to
-        // the operator (host), not to the user's omp session inside the workspace.
-        argv.add("--no-rules");
-        argv.add("--no-skills");
+        // Rules（CLAUDE.md / AGENTS.md）：默认禁用（安全考虑 —— 用户工作区内 rules 不属于 omp 平台运营规则）。
+        // 通过 enableRules=true 放开，便于运维注入组织级 rules。
+        if (!enableRules) {
+            argv.add("--no-rules");
+        }
+        // Skills：默认启用，加载 /data/omp/agent/skills/ 下共享 skill 集合。
+        // enableSkills=false 时禁用（保持向后兼容）。
+        if (!enableSkills) {
+            argv.add("--no-skills");
+        }
         // RTK (Rust Token Killer) Pi-style extension — rewrites bash commands to `rtk <cmd>`
         // to save 60-90% tokens. The extension file is dropped into the standard omp
         // user-extension path by the omp-allinone Docker image's RTK install layer.
         // Conditional load: skip if the file is absent so dev environments without
         // RTK still work. See docs/DEPLOY.md §18.4 for image install details.
+        // 双路径探测：容器路径 /root/.omp/... 优先（生产），其次开发机的 ~/.omp/...
+        String userHome = System.getProperty("user.home");
         Path rtkExt = Path.of("/root/.omp/agent/extensions/rtk.ts");
+        if (!Files.isRegularFile(rtkExt) && userHome != null) {
+            rtkExt = Path.of(userHome, ".omp/agent/extensions/rtk.ts");
+        }
         if (Files.isRegularFile(rtkExt)) {
             argv.add("--extension");
             argv.add(rtkExt.toString());
+        }
+        // rtk-proxy hook — wraps every bash call with `rtk rewrite` to transparently
+        // swap git/cargo/docker/... commands for their compact RTK equivalents at runtime.
+        // Requires the upstream ToolCallEventResult.updatedInput extension (already in
+        // the modified omp source). Conditional load — dev environments without the
+        // hook file still work; only files present at startup are wired in.
+        Path rtkProxyHook = Path.of("/root/.omp/hooks/rtk-proxy.ts");
+        if (!Files.isRegularFile(rtkProxyHook) && userHome != null) {
+            rtkProxyHook = Path.of(userHome, ".omp/hooks/rtk-proxy.ts");
+        }
+        if (Files.isRegularFile(rtkProxyHook)) {
+            argv.add("--hook");
+            argv.add(rtkProxyHook.toString());
         }
         // --provider is the provider id from models.yml (e.g. "deepseek"); fallback to "openai" when not set.
         argv.add("--provider");

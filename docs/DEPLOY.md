@@ -4,6 +4,9 @@
 
 > [!NOTE] **本指南适用于任何全新的 Linux x86_64 服务器**。唯一需要从开发机带过去的、**不在本指南里列出的**，就是工程源码本身（`git clone` 或 rsync）。
 
+> 📋 **变更历史**：本文件的镜像内容 / 卷结构 / 运维流程改动记录在 [`DEPLOY-CHANGELOG.md`](./DEPLOY-CHANGELOG.md)。
+> CodeGraph 使用说明见 §20。
+
 ---
 
 ## 0. 部署到新服务器 — 材料清单
@@ -760,11 +763,14 @@ curl -s http://localhost/api/auth/login -X POST -H 'Content-Type: application/js
 ├── omp-dev.sh                 # 容器内 omp 入口（被后端 spawn）
 ├── prod-application.yml       # 生产配置（DB / IDE / JWT）
 ├── maven-settings.xml         # Maven 镜像（脱敏，路径替换为容器内路径，参考 §19.7）
+├── mcp.json                    # CodeGraph MCP 配置（共享，entrypoint cp 到 agentRoot，参考 §20.8）
+├── APPEND_SYSTEM.md            # CodeGraph 使用引导 system prompt（Java 端按用户 cp 到 agentDir/，参考 §20.8）
 ├── jdk21/                     # JDK 21（打进镜像）
 ├── bun                        # bun 二进制（打进镜像）
 ├── omp-backend-0.1.0.jar      # 后端 fat-jar
 ├── dist/                      # 前端静态产物
-└── omp/                       # omp 源码 + node_modules + linux .node
+├── omp/                       # omp 源码 + node_modules + linux .node
+└── （CodeGraph 由 Dockerfile 内 npm install -g 安装，依赖上层 Node 22 LTS）
 ```
 
 **Dockerfile**：
@@ -787,6 +793,25 @@ ENV PATH=/usr/local/jdk21/bin:/usr/local/bin:$PATH
 COPY bun /usr/local/bin/bun
 RUN chmod +x /usr/local/bin/bun
 
+# ============================================================================
+# oh-my-pi CLI 安装 —— 共享 /data/omp/agent/ 配置 + 生态扩展能力
+# ----------------------------------------------------------------------------
+# 目标：
+#   1) 容器内可直接用 `omp` 命令（plugin install / skill add / 等生态命令）
+#   2) Java 后端继续通过 /app/omp/scripts/omp-dev.sh 跑源码，
+#      与安装的 omp 共享同一套 /data/omp/agent/ 下的 extensions/skills/hooks/tools
+#   3) entrypoint.sh 在 /root/.omp/agent 上建 symlink → /data/omp/agent，
+#      Java spawn 时为每个用户建 extensions/skills/hooks/tools 子 symlink
+#
+# 安装源：官方脚本 https://omp.sh/install（GitHub 国内走 gh-proxy 中转）。
+# 安装失败时镜像构建会失败（fail-fast），便于 CI 第一时间发现。
+# 升级：install 脚本自动拉最新 stable；想钉版本可改 URL。
+# ============================================================================
+RUN curl -fsSL "https://gh-proxy.com/https://omp.sh/install" -o /tmp/omp-install.sh \
+    && sh /tmp/omp-install.sh \
+    && rm /tmp/omp-install.sh \
+    && omp --version
+
 # Maven 3.9.9 —— Java 后端容器内构建（tarball 安装，~15 MB；不走 apt 避免拖 openjdk 依赖）。
 # 版本与 DEPLOY.md §2.1 本地构建要求对齐（"Maven ≥ 3.9"）；apt 仓库的 3.6.3 不满足。
 ARG MAVEN_VERSION=3.9.9
@@ -803,6 +828,13 @@ ENV PATH=/usr/local/maven/bin:/usr/local/jdk21/bin:/usr/local/bin:$PATH
 # Maven 全局 settings（aliyun 镜像 + 本地仓库 /data/omp/maven-repository）。
 # 容器启动时由 entrypoint.sh cp 到 /root/.m2/settings.xml。
 COPY maven-settings.xml /etc/omp/maven-settings.xml
+
+# CodeGraph MCP 配置 + system prompt 模板（参考 §20.8）。
+# entrypoint.sh 启动时复制到 /data/omp/agent/mcp.json（共享，所有用户用同一份）。
+# Java 端 OmpRpcClientFactory.spawn() 为每个用户创建 symlink 指向 ../mcp.json。
+# 注意：CodeGraph CLI 自身的安装下移到 Node 22 装好之后（走 npm 国内镜像，见下方）。
+COPY mcp.json /etc/omp/mcp.json
+COPY APPEND_SYSTEM.md /etc/omp/APPEND_SYSTEM.md
 
 # RTK (Rust Token Killer) —— 压缩 LLM agent 调 shell 时的输出，60-90% token 节省。
 # 装 musl 静态二进制（不挑 libc，无运行时依赖）。固定版本以保证可复现，
@@ -821,6 +853,17 @@ RUN curl -fsSL "https://gh-proxy.com/https://github.com/rtk-ai/rtk/releases/down
 # --extension 指向这个绝对路径（见 OmpProcessSpec.toArgv），双保险。
 RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.pi/agent/extensions/rtk.ts /root/.omp/agent/extensions/rtk.ts
 
+# rtk-proxy hook —— 在 omp 的 Bash 工具执行前自动把命令喂给 `rtk rewrite`，
+# 对能改写的子命令（git、cargo、docker、gh、…）前置加 `rtk`，节省 60-90% token；
+# 不匹配的子命令（echo、cd、ssh…）原样放行。
+# 需 omp 源码具备 ToolCallEventResult.updatedInput 扩展（当前 dev 分支已合入）。
+# 后端 spawn omp 时按 OmpProcessSpec.toArgv 的 Files.isRegularFile 条件加载，
+# 文件缺失就跳过 —— dev 环境无该文件也能跑（fallback 到上面 RTK extension）。
+RUN mkdir -p /root/.omp/hooks \
+    && curl -fsSL "https://raw.githubusercontent.com/<your-org>/<your-repo>/main/backend/src/main/resources/hooks/rtk-proxy.ts" \
+         -o /root/.omp/hooks/rtk-proxy.ts \
+    && chmod 0644 /root/.omp/hooks/rtk-proxy.ts
+
 # ============================================================================
 # 多语言开发环境（开发容器用）
 # ----------------------------------------------------------------------------
@@ -833,7 +876,8 @@ RUN rtk init -g --agent pi && mkdir -p /root/.omp/agent/extensions && cp /root/.
 #   - Go 1.23        +~700 MB（官方 tarball）
 #   - Rust stable    +~1.2 GB（rustup 含 cargo + rustc）
 #   - Maven 3.9.9    +~15 MB（官方 tarball，dev-only）
-# 合计：镜像增加约 2.2 GB。生产实例不需要这些，dev-only。
+#   - CodeGraph       +~90 MB（npm global install，带 bundled Node + SQLite 运行时）
+# 合计：镜像增加约 2.3 GB。生产实例不需要这些，dev-only。
 # ============================================================================
 ARG GO_VERSION=1.23.4
 ARG UV_VERSION=0.11.23
@@ -845,6 +889,19 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && tar -C /usr/local -xzf /tmp/node.tar.gz --strip-components=1 \
     && rm /tmp/node.tar.gz \
     && node --version && npm --version
+
+# CodeGraph —— 代码智能知识图（编译期符号图 + 调用边 + 依赖，一次 codegraph_explore
+# 替代多次 grep/glob/Read）。每个 omp agent 会话通过 §20.8 模板自动接入 MCP。
+#
+# 历史踩坑（详见 §20.8.1）：
+#   - `curl install.sh | sh` 直连 GitHub raw 国内 SSL_read EOF / gh-proxy 522 不稳定
+#   - 预下载 tarball + COPY 体积大、升级要 scp 50 MB
+# 当前方案：走 npmmirror.com 装 npm 包，依赖前面装好的 Node 22。
+# 版本锁定在 1.0.1，升级时改 ARG 即可，**不需要** scp 任何文件到 docker-build。
+ARG CODEGRAPH_VERSION=1.0.1
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g @colbymchenry/codegraph@${CODEGRAPH_VERSION} \
+    && codegraph --version
 
 # Python 3 + pip + venv（Ubuntu 22.04 自带 3.10，腾讯云 apt 镜像源已在上面配好）
 RUN apt-get update \
@@ -917,10 +974,81 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
 set -e
 mkdir -p /data/omp/workspaces /data/omp/agent /data/omp/logs /data/omp/maven-repository
 
+# ============================================================================
+# 初始化共享 omp 生态目录（运维统一管理 extensions/skills/hooks/tools）
+# ----------------------------------------------------------------------------
+# /data/omp/agent/ 是持久的共享根，容器重建不丢失。
+# entrypoint 在 /root/.omp/agent 上建 symlink → 这里，
+# 让 `omp plugin install` 等运维命令直接落到持久化卷。
+# Java 端在 spawn() 中（OmpRpcClientFactory.ensureSharedSymlinks）为每个用户
+# 在 /data/omp/agent/{user}/ 下建 extensions/skills/hooks/tools 子目录的 symlink
+# 指向 ../<subdir>，让 omp 子进程自动发现共享生态。
+# ============================================================================
+SHARED_AGENT=/data/omp/agent
+mkdir -p "$SHARED_AGENT"/extensions \
+         "$SHARED_AGENT"/skills \
+         "$SHARED_AGENT"/hooks/pre \
+         "$SHARED_AGENT"/hooks/post \
+         "$SHARED_AGENT"/tools \
+         "$SHARED_AGENT"/commands \
+         "$SHARED_AGENT"/rules \
+         "$SHARED_AGENT"/prompts
+
+# 把 root 用户的 omp agent 目录 symlink 到共享位置（仅当 root 默认 agent 目录不存在时）
+ROOT_OMP_AGENT=/root/.omp/agent
+if [ ! -e "$ROOT_OMP_AGENT" ]; then
+  mkdir -p /root/.omp
+  ln -s "$SHARED_AGENT" "$ROOT_OMP_AGENT"
+  echo "[entrypoint] /root/.omp/agent → $SHARED_AGENT"
+elif [ -L "$ROOT_OMP_AGENT" ] && [ "$(readlink -f "$ROOT_OMP_AGENT")" = "$SHARED_AGENT" ]; then
+  : # 已是正确 symlink，无需操作
+elif [ ! -L "$ROOT_OMP_AGENT" ] && [ -z "$(ls -A "$ROOT_OMP_AGENT" 2>/dev/null)" ]; then
+  # 是空目录 → 改成 symlink，避免两份独立配置漂移
+  rmdir "$ROOT_OMP_AGENT"
+  ln -s "$SHARED_AGENT" "$ROOT_OMP_AGENT"
+  echo "[entrypoint] /root/.omp/agent (empty dir) → $SHARED_AGENT"
+else
+  echo "[entrypoint] WARN: $ROOT_OMP_AGENT 已有内容，跳过 symlink（保留现有配置）"
+fi
+
 # 部署 Maven 全局 settings.xml（镜像内路径已脱敏，localRepository 指向持久化卷）
 mkdir -p /root/.m2
 cp /etc/omp/maven-settings.xml /root/.m2/settings.xml
 echo "[entrypoint] Maven $(/usr/local/maven/bin/mvn --version 2>&1 | head -1)"
+
+# 部署共享 MCP 配置（所有 omp 会话共用）
+# Java 端在 spawn 时为每个用户创建 symlink 指向此文件
+if [ -f /etc/omp/mcp.json ]; then
+  cp /etc/omp/mcp.json /data/omp/agent/mcp.json
+  echo "[entrypoint] MCP config → /data/omp/agent/mcp.json"
+fi
+
+# 部署共享 APPEND_SYSTEM 模板（运维级 system prompt 注入）。
+# Java 端在 spawn 时合并模板 + 用户私有 → /data/omp/agent/{user}/APPEND_SYSTEM.md。
+if [ -f /etc/omp/APPEND_SYSTEM.md ]; then
+  cp /etc/omp/APPEND_SYSTEM.md /data/omp/agent/APPEND_SYSTEM.template.md
+  echo "[entrypoint] APPEND_SYSTEM template → /data/omp/agent/APPEND_SYSTEM.template.md"
+fi
+
+# omp CLI 自检（来自安装脚本）
+echo "[entrypoint] omp $(omp --version 2>&1 | head -1)"
+
+# CodeGraph 自检（安装到 /root/.local/bin，安装时已加 PATH）
+echo "[entrypoint] CodeGraph $(codegraph version 2>&1)"
+
+# 后台初始化已有工作区的 .codegraph/ 索引（不阻塞 nginx/java 启动）
+# codegraph init 首次全量索引约 15-40 秒/工作区，后续自动增量同步。
+if command -v codegraph &>/dev/null; then
+  (
+    for ws in /data/omp/workspaces/*/*/; do
+      [ -d "$ws" ] || continue
+      [ -d "$ws/.codegraph" ] && continue   # 已初始化，跳过
+      echo "[entrypoint] codegraph init $ws" &
+      codegraph init "$ws" --quiet || true
+    done
+    wait
+  ) &
+fi
 
 echo "[entrypoint] 启动 nginx..."
 nginx
@@ -953,6 +1081,15 @@ app:
     workspaces-root: /data/omp/workspaces     # 与 code-server 容器同路径
     agent-root: /data/omp/agent
     stderr-log-dir: /data/omp/logs
+    # 共享 agent 根目录（运维统一管理 extensions/skills/hooks/tools 的入口）。
+    # entrypoint 在 /root/.omp/agent 上建 symlink → 此目录。
+    # Java spawn 时为每个用户在 agentRoot/{user} 下建子目录 symlink 指向 ../<subdir>。
+    shared-agent-root: /data/omp/agent
+    # 启用 skills 加载（推荐 true）。false 时追加 --no-skills。
+    enable-skills: true
+    # 禁用 rules（CLAUDE.md / AGENTS.md）加载 —— 安全考虑，
+    # 用户工作区内 rules 不属于 omp 平台运营规则，避免污染会话。
+    enable-rules: false
     ide:
       enabled: true
       public-base-url: http://10.126.2.120:5000   # 浏览器访问 code-server 的地址
@@ -1227,6 +1364,18 @@ ssh $SERVER 'docker exec omp-app du -sh /data/omp/maven-repository'
 # 清理 maven 本地仓库（强制重新下载）
 ssh $SERVER 'docker exec omp-app rm -rf /data/omp/maven-repository/*'
 
+# CodeGraph 版本自检
+ssh $SERVER 'docker exec omp-app codegraph version'
+
+# CodeGraph 索引状态（各工作区图的文件数/符号数）
+ssh $SERVER 'for ws in /data/omp/workspaces/*/*/; do echo "--- $ws"; docker exec omp-app codegraph status "$ws" 2>/dev/null || echo "  (未初始化)"; done'
+
+# 强制重建某个工作区的 CodeGraph 索引
+ssh $SERVER 'docker exec omp-app codegraph index /data/omp/workspaces/uid/repo --force'
+
+# 看 .codegraph/ 索引文件总大小
+ssh $SERVER 'docker exec omp-app du -sh /data/omp/workspaces/*/*/.codegraph'
+
 # 备份 workspaces 卷
 ssh $SERVER 'docker run --rm -v omp-workspaces:/data -v /home/omp/backup:/backup \
   ubuntu tar -czf /backup/workspaces-$(date +%Y%m%d).tar.gz -C /data .'
@@ -1235,9 +1384,9 @@ ssh $SERVER 'docker run --rm -v omp-workspaces:/data -v /home/omp/backup:/backup
 ssh $SERVER 'tar -czf /home/omp/backup/code-server-data-$(date +%Y%m%d).tar.gz /home/omp/app/ide/'
 ```
 
-### 19.6 容器内 Maven 自检流程
+### 19.6 容器内 Maven / CodeGraph 自检流程
 
-镜像带 Maven 3.9.9 + JDK 21（来自 `/usr/local/jdk21`）后，可走容器内自检：
+镜像带 Maven 3.9.9 + JDK 21（来自 `/usr/local/jdk21`）+ CodeGraph 后，可走容器内自检：
 
 ```bash
 ssh root@10.126.2.120
@@ -1256,6 +1405,15 @@ docker exec -it -w /app/backend omp-app /usr/local/maven/bin/mvn -DskipTests pac
 
 # 5) 看仓库大小（下完 Spring 全家桶后约 300–500 MB）
 docker exec omp-app du -sh /data/omp/maven-repository
+
+# 6) CodeGraph 版本（应输出版本号）
+docker exec omp-app codegraph version
+
+# 7) 查看工作区 CodeGraph 索引状态（符号数/文件数）
+docker exec omp-app codegraph status /data/omp/workspaces/<uid>/<repo>
+
+# 8) 测试 codegraph explore（不指定工作区也行，MCP server 自动识别）
+docker exec omp-app codegraph explore "OmpProcessSpec" --path /data/omp/workspaces/<uid>/<repo>
 ```
 
 ### 19.7 服务器端 `maven-settings.xml` 模板
@@ -1333,4 +1491,451 @@ docker exec omp-app du -sh /data/omp/maven-repository
 >   omp-app:/etc/omp/maven-settings.xml && \
 >   docker exec omp-app cp /etc/omp/maven-settings.xml /root/.m2/settings.xml'
 > ```
+
+---
+
+## 20. CodeGraph 使用说明
+
+omp-app 镜像在构建阶段通过 **`npm install -g @colbymchenry/codegraph`** 安装了 CodeGraph CLI（`/usr/local/bin/codegraph`，依赖前面装好的 Node 22 LTS）。
+omp agent 在容器内执行代码任务时，可借助它获得比 grep/glob/Read 更精准的上下文。
+
+### 20.1 是什么 & 为什么用
+
+**CodeGraph** 是基于 tree-sitter AST 的本地代码知识图：每个符号（函数/方法/类）、每条调用边、每个依赖都编译期抽取并落到 SQLite（`.codegraph/codegraph.db`），配合 FTS5 全文索引。
+omp agent 在容器内调用 `codegraph_explore` 时，一次返回：
+
+- 相关符号的**逐字源码**（按文件分组）
+- 它们之间的**调用路径**（含动态分发跳转：回调、React 重渲染、interface→impl）
+- 改动的**爆炸半径**（callers + callees + 反向依赖）
+
+收益：在每个仓库上都得到 **~58% 更少的工具调用**、**~22% 更快**、**file reads 接近 0**（来源：colbymchenry/codegraph README 基准测试）。
+
+**为什么在容器里也装**：omp 用户的代码仓库（工作区）就在容器卷里。在开发机上跑 CodeGraph 是给开发者的 Claude Code 用；在容器里跑是给 omp spawn 出来的 omp agent 用。**两个场景的索引互相独立**——开发机的 `.codegraph/` 与容器内同一份工作区的 `.codegraph/` 是不同 OS 上生成的 SQLite，不能混用。
+
+### 20.2 在容器里怎么用
+
+#### 容器内 CLI
+
+CodeGraph CLI 装在 `/root/.local/bin/codegraph`，已加到 PATH（Dockerfile 第 813 行 `ENV PATH=/root/.local/bin:$PATH`）。
+容器内直接调用：
+
+```bash
+docker exec omp-app codegraph version               # 版本自检
+docker exec omp-app codegraph status /data/omp/workspaces/<uid>/<repo>   # 索引状态
+docker exec omp-app codegraph explore "OmpProcessSpec" --path /data/omp/workspaces/<uid>/<repo>   # 单次探索
+docker exec omp-app codegraph node "OmpRpcClient" --path /data/omp/workspaces/<uid>/<repo>        # 单个符号
+docker exec omp-app codegraph callers "spawnOmp" --path /data/omp/workspaces/<uid>/<repo>         # 调用方
+docker exec omp-app codegraph impact "OmpProcessSpec" --path /data/omp/workspaces/<uid>/<repo>    # 爆炸半径
+```
+
+> `--path` 是工作区根（包含 `.codegraph/` 的目录）。省略时 CLI 自动从 cwd 向上找最近的 `.codegraph/` 父目录。
+
+#### omp agent 集成
+
+omp 后端 spawn omp 子进程时（参见 `OmpProcessSpec.toArgv`），已经把工作区 cwd 设到 `/data/omp/workspaces/<uid>/<repo>`。
+omp agent 在容器内执行 shell 调用时，会自动 `cd` 到该工作区——而 CodeGraph 索引就在工作区根的 `.codegraph/`，**无需显式指定**：
+
+```bash
+# omp agent 在容器内类似这样调用：
+cd /data/omp/workspaces/uid/repo
+codegraph explore "OmpProcessSpec"   # 自动找到 ./.codegraph/codegraph.db
+```
+
+#### MCP server（如果未来需要）
+
+当前 omp agent 没有直接挂 CodeGraph MCP server。如需启用：
+
+1. 容器内跑 `codegraph install`（交互式或 `--target=omp --location=global`）
+2. omp 后端 spawn 时加 `--extension` 或 `--mcp-server` 参数（取决于 omp 的 MCP 接入方式）
+
+> 当前 §18.4 Dockerfile 只装了 CLI，**没跑 `codegraph install`**——因为 omp agent 的 MCP 配置不在本次改动范围。如需要，单独追加 1 行 `RUN codegraph install --yes`。
+
+### 20.3 索引生命周期
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  codegraph init <workspace>     首次全量索引（15-40 秒/工作区）│
+│         │                                                    │
+│         ▼                                                    │
+│  .codegraph/codegraph.db       SQLite + FTS5（自动持续同步）  │
+│         │                                                    │
+│         │  file watcher（FSEvents/inotify）                  │
+│         │  debounce ~2 秒后增量更新                          │
+│         ▼                                                    │
+│  长期运行；agent 每次 explore 拿到的都是最新图               │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**关键事实**：
+- 索引位置：`<workspace>/.codegraph/`（**每个工作区独立**）
+- 自动同步：默认开启（agent 编辑文件 ~2 秒后图更新）
+- 与工作区同寿命：删工作区 = 删索引；不需要单独清理
+- 跨 OS 不互通：开发机（macOS）与容器内（Linux）的 `.codegraph/` 是**不同 OS 上生成的 SQLite**，**不能拷来拷去**；同一份 checkout 要么在这台机器用、要么在那台机器用，分别 `codegraph init`。
+- 默认排除：`node_modules/`、`dist/`、`build/`、`target/`、`.venv/`、`.git/`、单文件 > 1 MB（vendored blob）；具体见 CodeGraph README
+
+#### entrypoint.sh 自动化
+
+§18.4 entrypoint.sh 第 939–947 行在容器启动时**后台异步**对所有已有工作区执行 `codegraph init`：
+
+```bash
+if command -v codegraph &>/dev/null; then
+  (
+    for ws in /data/omp/workspaces/*/*/; do
+      [ -d "$ws" ] || continue
+      [ -d "$ws/.codegraph" ] && continue   # 已初始化，跳过
+      codegraph init "$ws" --quiet || true
+    done
+    wait
+  ) &
+fi
+```
+
+- **不阻塞** nginx/java 启动（子 shell 后台跑）
+- 已初始化的跳过（增量同步继续工作）
+- 新工作区首次创建后，下次容器重启时自动 init；**无需手动跑**
+
+#### 手动重建索引
+
+```bash
+# 完整重建某个工作区（图被破坏或大改后）
+docker exec omp-app codegraph index /data/omp/workspaces/<uid>/<repo> --force
+
+# 解锁（极端情况：stale lock 阻止索引）
+docker exec omp-app codegraph unlock /data/omp/workspaces/<uid>/<repo>
+
+# 看索引状态
+docker exec omp-app codegraph status /data/omp/workspaces/<uid>/<repo>
+```
+
+#### 会话级触发（OmpRpcClientFactory.ensureCodeGraphIndexed）
+
+除了 entrypoint.sh 容器启动时的批量 init，**每次新会话 spawn 也会刷新索引**（Java 端 `OmpRpcClientFactory.spawn()` 中调用 `ensureCodeGraphIndexed(workspace)`）：
+
+| 工作区状态 | 触发命令 | 频率 |
+|---|---|---|
+| 无 `.codegraph/` | `codegraph init -i`（init + 首次全量 index）| 立即 |
+| 有 `.codegraph/`，db mtime ≥ 30s | `codegraph index --quiet`（全量重扫，兜底 watcher）| 立即 |
+| 有 `.codegraph/`，db mtime < 30s | 跳过 | 30s throttle，防同工作区频繁会话重复 |
+
+后台 daemon 线程异步执行，**不阻塞** omp spawn。codegraph 命令失败（不在 PATH、进程崩）
+log warn 兜底，omp 仍能正常启动；agent 调 codegraph_explore 时 MCP 层自动 fallback。
+
+### 20.4 命令速查
+
+#### 容器内（运维）
+
+```bash
+# 版本
+docker exec omp-app codegraph version
+
+# 看所有工作区索引状态
+ssh root@10.126.2.120 'for ws in /data/omp/workspaces/*/*/; do \
+  echo "--- $ws"; \
+  docker exec omp-app codegraph status "$ws" 2>/dev/null || echo "  (未初始化)"; \
+done'
+
+# 索引大小
+docker exec omp-app du -sh /data/omp/workspaces/*/*/.codegraph
+
+# 重建
+docker exec omp-app codegraph index /data/omp/workspaces/<uid>/<repo> --force
+
+# 卸载（删 .codegraph/，下次 init 重生）
+docker exec omp-app rm -rf /data/omp/workspaces/<uid>/<repo>/.codegraph
+```
+
+#### 容器内（开发调试）
+
+```bash
+# 一次性探索
+docker exec omp-app codegraph explore "How does spawnOmp work" --path /data/omp/workspaces/<uid>/<repo>
+
+# 找所有调用某方法的地方
+docker exec omp-app codegraph callers "spawnOmp" --path /data/omp/workspaces/<uid>/<repo>
+
+# 改某方法的影响范围
+docker exec omp-app codegraph impact "OmpProcessSpec" --path /data/omp/workspaces/<uid>/<repo>
+
+# 单文件 cat（带行号）
+docker exec omp-app codegraph node "src/main/java/.../Foo.java" --path /data/omp/workspaces/<uid>/<repo>
+
+# 只输出路径（CI 友好）
+docker exec omp-app codegraph affected --stdin --quiet < <(echo "src/Foo.ts")
+```
+
+### 20.5 故障排查
+
+| 症状 | 原因 | 处理 |
+|---|---|---|
+| `CodeGraph not initialized` | 工作区还没 `codegraph init` | 重启容器（自动后台 init）或手动 `docker exec omp-app codegraph init <ws>` |
+| 索引很久没更新 | 文件 watcher 死了 | `docker exec omp-app codegraph status <ws>` 看状态；`codegraph sync <ws>` 强制一次增量同步 |
+| `database is locked` | 旧版（< 0.9）install，bundled runtime 缺失 | `npm i -g @colbymchenry/codegraph@latest` 升级；或重装 |
+| `Journal: other than wal` | 文件系统不支持 WAL（network share、WSL2 /mnt） | 把工作区迁到本地盘；或换 OS-local 的 CODEGRAPH_DIR |
+| 缺失某符号 | 文件在 `.gitignore` 里 / 默认排除目录 / 不支持的语言 | `codegraph index --force` 重跑；检查 `.gitignore`；参考 README 的支持语言列表 |
+| 跨 OS 拷索引发现冲突 | SQLite 跨 Windows/WSL 不安全 | 同份 checkout 在两台机器上分别 `codegraph init`；或用 `CODEGRAPH_DIR=.codegraph-win` 区分 |
+| 镜像里没 `codegraph` 命令 | npm install 失败（npmmirror 网络/版本落后） | 手动 `docker exec omp-app npm i -g @colbymchenry/codegraph@1.0.1` 重装 |
+| omp agent 调不到图 | 工作区 `.codegraph/` 不存在 | 看 §20.3 entrypoint.sh 自动 init 段；或手动 `docker exec omp-app codegraph init <ws>` |
+| **agent 不调 `codegraph_*` 工具**（已确认 MCP 连接成功） | 工作区是空目录 / 只有 README / agent 已用 `read` 看到非代码内容 | 切换到有真实代码的工作区；或在 task 里明确点名（"用 codegraph_search 找一下 OmpRpcClient"） |
+| **agent 不调 `codegraph_*` 工具**（即使工作区有索引） | LLM 选了 grep/find/Read | 检查 `APPEND_SYSTEM.md` 是否被加载（容器内：`docker exec omp-app cat {agentDir}/APPEND_SYSTEM.md`）；它必须指明优先级 |
+| `Connecting to MCP servers: ...` 卡在 omp 启动 stderr | MCP discovery 还没完成 fast startup gate（250ms）| omp 已用 `DeferredMCPTool` 占位异步连接，**不会** 真阻塞——继续等几秒 LLM 第一次调工具时就 ready |
+
+### 20.6 与开发机的关系
+
+- **开发机**（macOS）跑 Claude Code + CodeGraph：索引在 `~/.codegraph/.../your-project/.codegraph/`
+- **容器内**（Linux）跑 omp agent + CodeGraph CLI：索引在 `/data/omp/workspaces/<uid>/<repo>/.codegraph/`
+- 同一份 git checkout 在两边都被各自的 `.codegraph/` 索引；**互不干扰**
+- 开发机 `.gitignore` 应加上 `.codegraph/`（CodeGraph 默认已自动排除，但显式写更稳）
+
+### 20.7 卸载
+
+如果某天不想用 CodeGraph：
+
+**容器内**（不影响镜像）：
+```bash
+ssh root@10.126.2.120 'for ws in /data/omp/workspaces/*/*/; do \
+  docker exec omp-app rm -rf "$ws/.codegraph"; \
+done'
+```
+
+**镜像内**（从 Dockerfile 删 1 行 + 可选删 2 个模板 COPY）：
+```dockerfile
+# 删掉这一段（CodeGraph npm 安装段，§18.4 Dockerfile 副本）：
+ARG CODEGRAPH_VERSION=1.0.1
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g @colbymchenry/codegraph@${CODEGRAPH_VERSION} \
+    && codegraph --version
+
+# 可选：删模板（不删也无害，但留着没用）：
+COPY mcp.json /etc/omp/mcp.json
+COPY APPEND_SYSTEM.md /etc/omp/APPEND_SYSTEM.md
+```
+
+重建镜像后，新工作区不再自动 init；老的 `.codegraph/` 留在卷里无害（CodeGraph 不存在时 OMP agent 退化为 grep/glob）。
+
+### 20.8 L2 集成：CodeGraph MCP server（让 omp agent 自动调用 codegraph_explore）
+
+§20.1–20.7 装的是 **CodeGraph CLI**，容器内运维人员可以手工 `codegraph explore ...`。
+**§20.8 让 omp agent 在每次会话里自动得到 `mcp__codegraph__codegraph_explore` 工具**——和你在开发机上的 Claude Code 体验一致。
+
+#### 工作原理
+
+omp agent 启动时通过 `PI_CODING_AGENT_DIR` 环境变量定位 user-scope 配置目录（默认 `~/.omp/agent/`，
+本工程在 Java 端注入为 `/data/omp/agent/{username}/`）。omp 在这个目录下查找 **`mcp.json`** 自动发现
+MCP servers，查找 **`APPEND_SYSTEM.md`** 把内容追加到每次会话的 system prompt。
+
+**共享 MCP 配置**：所有用户共用同一份 `mcp.json`，统一维护在 `agentRoot/mcp.json`（如 `/data/omp/agent/mcp.json`）。
+Java 后端在 `OmpRpcClientFactory.spawn()` 为每个用户创建 symlink：
+
+```
+agentRoot/mcp.json              ← 唯一维护点（共享）
+agentRoot/{username1}/mcp.json  →  symlink → ../mcp.json
+agentRoot/{username2}/mcp.json  →  symlink → ../mcp.json
+```
+
+```java
+ensureGlobalMcpSymlink(props.agentRoot(), agentDir);
+```
+
+`ensureGlobalMcpSymlink` 行为：
+1. `agentRoot/mcp.json` 不存在 → 静默跳过（开发机未放共享配置时不阻塞 omp 启动）
+2. 已有正确 symlink → 不重建
+3. 旧文件/旧链接 → 删除后重建 symlink `../mcp.json`
+4. symlink 创建失败 → 不抛（Windows 不支持/权限不够时退化，omp 启动时不带 MCP）
+
+#### 服务器端 `mcp.json` 共享配置
+
+放在 `/home/omp/docker-build/mcp.json`，被 Dockerfile `COPY` 到 `/etc/omp/mcp.json`。
+容器启动时 entrypoint 复制到 `/data/omp/agent/mcp.json`（共享路径）。
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "codegraph": {
+      "type": "stdio",
+      "command": "codegraph",
+      "args": ["serve", "--mcp"],
+      "env": {
+        "CODEGRAPH_MCP_TOOLS": "explore,context,node,search,callers,impact"
+      }
+    }
+  }
+}
+```
+
+**关键点**：
+- `command: codegraph` —— 容器内 PATH 已含 `/root/.local/bin`（§18.4 Dockerfile 行 818）
+- `args: ["serve", "--mcp"]` —— 子命令 `codegraph serve --mcp` 启动 stdio MCP server（`codegraph serve --help` 确认）
+- **没有 `cwd` 字段** —— codegraph MCP server 通过 MCP `roots/list` 协议从客户端拿工作目录，omp 的 MCP client 在 initialize 阶段已声明 `roots` capability（`packages/coding-agent/src/mcp/client.ts:101`），自动闭环
+- `CODEGRAPH_MCP_TOOLS` —— 默认只暴露 `explore`，这里全开 6 个工具给 omp agent 用
+
+#### 服务器端 `APPEND_SYSTEM.md` 模板
+
+放在 `/home/omp/docker-build/APPEND_SYSTEM.md`，被 Dockerfile `COPY` 到 `/etc/omp/APPEND_SYSTEM.md`。
+Java 端在 spawn 时按用户合并生成 `{agentRoot}/{username}/APPEND_SYSTEM.md`（支持用户私有覆盖）。
+
+```markdown
+## CodeGraph (mcp__codegraph__*)
+
+This workspace has a CodeGraph knowledge graph (`.codegraph/`) for surgical
+code intelligence. Prefer its tools over grep/glob/Read when exploring code:
+
+- `mcp__codegraph__codegraph_explore` — primary tool. One call returns relevant
+  symbols' verbatim source grouped by file, plus call paths and blast radius.
+  Use for "how does X work", "trace X → Y", "what would change if I edit X".
+- `mcp__codegraph__codegraph_callers` / `..._impact` — narrow follow-ups after
+  explore surfaces a symbol of interest.
+
+The graph auto-syncs ~2s after file edits. If a fresh edit isn't reflected,
+retry once; do not fall back to grep without trying codegraph first.
+
+Fallback (graph missing / broken): use built-in `search` + `find` + `read`.
+```
+
+> **修改后部署**：共享 MCP 配置更新后无需重建镜像——直接 `docker cp` 到共享路径即可：
+> ```bash
+> ssh root@10.126.2.120 'docker cp /home/omp/docker-build/mcp.json \
+>   omp-app:/data/omp/agent/mcp.json'
+> ```
+> 所有用户的下次会话即时生效（symlink 指向同一份文件）。
+
+#### 验证
+
+```bash
+# 1) 容器内 codegraph serve --mcp 子命令可用
+docker exec omp-app codegraph serve --help | grep -- --mcp
+
+# 2) 共享 mcp.json 存在
+docker exec omp-app ls -la /data/omp/agent/mcp.json
+
+# 3) 每个用户 agentDir 下是 symlink（不是拷贝）
+docker exec omp-app ls -la /data/omp/agent/<username>/mcp.json
+# 预期输出: lrwxrwxrwx  ...  mcp.json -> ../mcp.json
+
+# 4) omp agent 进程跑起来后能看到 codegraph serve 子进程
+docker exec omp-app sh -c 'ps -ef | grep -E "codegraph serve|omp" | grep -v grep'
+
+# 5) omp session 日志里看 MCP discovery
+docker logs omp-app 2>&1 | grep -i 'mcp\|codegraph'
+
+# 6) 让 agent 跑一次"理解某模块"的对话，验证它调了 mcp__codegraph__codegraph_explore
+#    （从前端会话面板看 tool_call 流；或后端日志 [omp→OUT] tool_call name=mcp__codegraph__...）
+```
+
+#### 失败兜底
+
+- **codegraph 二进制 broken** → MCP server 启动失败 → omp 的 fast startup gate（250ms）超时 → `DeferredMCPTool` 占位 + 错误记录到 `errors` map → **omp 正常启动**，agent 调 codegraph 工具时返回 error，LLM 自动 fallback 到 `search`/`find`/`read`
+- **共享 mcp.json 不存在** → symlink 创建跳过 → omp 启动时不带 CodeGraph MCP（开发机正常）
+- **`.codegraph/` 索引不存在** → MCP server 启动成功但 explore 返回空 → LLM 看到空结果会改用其他工具
+- **codegraph 重连风暴**：omp 已有 30s 滑窗 + burst 5 次的熔断（`packages/coding-agent/src/mcp/manager.ts:80-81`），不会拖垮 session
+
+#### 与 §20.7 卸载的关系
+
+§20.7 卸载的是 **CLI**——`/root/.local/bin/codegraph` 二进制。卸载后 §20.8 的 MCP server 自动失效
+（`command: codegraph` 找不到），omp agent 退化到不含 CodeGraph 的工具集。
+
+只卸载 §20.8（保留 CLI 给运维用），删 3 处：
+1. Dockerfile 删 `COPY mcp.json /etc/omp/...` 和 `COPY APPEND_SYSTEM.md /etc/omp/...` 两行
+2. entrypoint 删 `cp /etc/omp/mcp.json /data/omp/agent/mcp.json` 这段
+3. `OmpRpcClientFactory.java` 删 `ensureGlobalMcpSymlink(...)` 调用
+
+#### 20.8.1 镜像构建路径变迁
+
+CodeGraph 安装方式演进过 3 版，**当前生效 = 方案 C（npm 全局安装）**。前两版的踩坑记录保留以便复盘。
+
+| 方案 | 状态 | 命令 | 问题 |
+|---|---|---|---|
+| A. 官方 install.sh | ❌ 弃用 | `RUN curl -fsSL https://raw.githubusercontent.com/.../install.sh \| sh` | 国内直连 GitHub raw SSL_read EOF；`gh-proxy.com` 中转 522/524 不稳定 |
+| B. 预编译 tarball + COPY | ❌ 弃用 | 开发机 `curl -o codegraph-linux-x64.tar.gz` + scp + Dockerfile `COPY + tar + ln -s` | 升级要重 scp 50 MB；tarball 路径不直观（`codegraph-linux-x64/bin/codegraph` + `lib/`） |
+| **C. npm 全局安装**（当前）| ✅ 生效 | `RUN npm config set registry https://registry.npmmirror.com && npm i -g @colbymchenry/codegraph@${VERSION}` | 走 npmmirror 国内稳；升级只改 ARG，不需 scp |
+
+**当前 Dockerfile 关键片段**（已在 §18.4 Dockerfile 副本中固化）：
+
+```dockerfile
+# Node 22 先装好（CodeGraph 依赖它）
+ARG NODE_VERSION=22.11.0
+RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.gz" \
+      -o /tmp/node.tar.gz && tar -C /usr/local -xzf /tmp/node.tar.gz --strip-components=1 \
+    && rm /tmp/node.tar.gz && node --version && npm --version
+
+# CodeGraph 走 npm 全局安装（国内 npmmirror 镜像，稳定）
+ARG CODEGRAPH_VERSION=1.0.1
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g @colbymchenry/codegraph@${CODEGRAPH_VERSION} \
+    && codegraph --version
+```
+
+**升级路径**：
+
+```bash
+# 方式 1：改 Dockerfile（推荐，可复现）
+sed -i 's|CODEGRAPH_VERSION=1.0.1|CODEGRAPH_VERSION=1.0.2|' /home/omp/docker-build/Dockerfile
+docker build -t omp-allinone:latest /home/omp/docker-build && docker restart omp-app
+
+# 方式 2：进容器临时升级（验证用，重建镜像会丢失）
+docker exec omp-app npm i -g @colbymchenry/codegraph@latest && docker exec omp-app codegraph --version
+```
+
+**其他配套踩坑修正**（同 Dockerfile 中，已固化）：
+
+| 包 | 不可用 | 当前可用 |
+|---|---|---|
+| Maven | `gh-proxy.com/archive.apache.org/...` 524 | 直连 `archive.apache.org`（apache 国内可访问） |
+| Go | `gh-proxy.com/go.dev/...` / `go.dev` 直连都不稳 | `mirrors.aliyun.com/golang/...` |
+
+### 20.9 本地验证记录（2026-06-23）
+
+L2 集成在**开发机 macOS + 本地 backend + 本地 omp**端到端走通，证据如下：
+
+#### 验证步骤
+1. 本地启动 backend（`mvn spring-boot:run` 或 IDEA debugger），并配置 `OMP_BIN=/Users/<you>/bin/omp`
+2. 在共享路径放置 mcp.json（Java 端检测 `agentRoot/mcp.json` 存在后创建 symlink）：
+   ```bash
+   cat > /tmp/omp/agent/mcp.json << 'EOF'
+   {
+     "mcpServers": {
+       "codegraph": {
+         "type": "stdio",
+         "command": "codegraph",
+         "args": ["serve", "--mcp"],
+         "env": { "CODEGRAPH_MCP_TOOLS": "explore,context,node,search,callers,impact" }
+       }
+     }
+   }
+   EOF
+   ```
+3. 选一个工作区跑 `codegraph init` + `codegraph index`（注：需要工作区**真有源代码文件**，README + index.html 类的空模板不会触发 `No files found to index`）
+4. 前端创建会话 → 触发 omp 子进程
+
+#### 关键证据
+
+| 检查项 | 实际输出 |
+|---|---|
+| `cat /tmp/omp/logs/omp-<session-id>.err.log` | **`Connecting to MCP servers: codegraph, cdp-bridge, ...`** ← codegraph 在列表里 |
+| `ps aux \| grep "codegraph serve --mcp"` | 看到多个 `node .../codegraph serve --mcp` 子进程（一个 omp session 一个） |
+| stdio 直接握手测试（验证 MCP 协议层）| `codegraph serve --mcp` 接收 `tools/list` 返回 9 个 `codegraph_*` 工具：search / context / callers / callees / impact / node / explore / status / files |
+
+#### stdio 直接握手测试命令
+
+跳过 omp 中间层，直接验证 MCP 协议层是否正常：
+
+```bash
+cd /path/to/workspace-with-codegraph-index
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{"roots":{"listChanged":false}},"clientInfo":{"name":"test","version":"1"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}' | codegraph serve --mcp 2>/dev/null
+# 预期：返回包含 9 个 codegraph_* 工具的 JSON
+```
+
+#### 失败但已确认非 MCP 问题
+
+| 现象 | 真因 | 不算 bug |
+|---|---|---|
+| Agent 第一次会话用 `read` + `find` 而非 `codegraph_explore` | 工作区目录只有 `.gitkeep` 占位文件，没有真实代码 | LLM 通过 `read` 几次就发现目录是空的，正确决策；要换成有真实代码的工作区 |
+| 本地 `OmpRpcClientFactory.ensureGlobalMcpSymlink` 没建链接 | macOS 上 `/etc/omp/mcp.json` 不存在 → `agentRoot/mcp.json` 也不存在 → 静默跳过（设计如此） | 开发机预期就是手工放 `agentRoot/mcp.json`，Java 端自动创建 symlink |
+
+#### 与服务器部署的关系
+
+本地走通 = **MCP 协议 / Java 改动 / 系统提示注入** 三层都没问题。
+服务器 L2 完整生效还需要 §20.8.1 的镜像构建踩坑修正落到位（已在 §18.4 Dockerfile 副本中固化）。
 

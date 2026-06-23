@@ -1073,12 +1073,14 @@ onMounted(() => {
                 <span>会话 ID</span>
                 <span>标题</span>
                 <span>用户 ID</span>
+                <span>仓库</span>
                 <span>推流时长</span>
               </div>
               <div v-for="s in streamingSessions" :key="s.sessionId" class="row">
                 <code style="font-family: var(--font-mono); font-size: 12px;">{{ s.sessionId.slice(0, 12) }}...</code>
                 <span style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="s.title">{{ s.title || '（无标题）' }}</span>
                 <span>{{ s.userId ?? '—' }}</span>
+                <span style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="s.repoName">{{ s.repoName || s.repoId || '—' }}</span>
                 <span style="color: var(--danger); font-weight: 500;">{{ fmtDuration(s.streamingSeconds) }}</span>
               </div>
             </div>
@@ -1177,16 +1179,16 @@ onMounted(() => {
 }
 
 .admin-hero-stats {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 1px;
-  background: var(--border);
+  display: flex;
+  flex-wrap: wrap;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
 }
-
 .admin-hero-stats .stat-cell {
+  flex: 1 1 0;
+  min-width: 150px;
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1285,10 +1287,8 @@ onMounted(() => {
    Mobile collapse
    ==================================================================== */
 @media (max-width: 900px) {
-  .admin-hero-stats {
-    grid-template-columns: repeat(2, 1fr);
-  }
   .admin-hero-stats .stat-cell {
+    flex-basis: 50%;
     padding: 20px 14px 18px;
     gap: 10px;
   }
@@ -1299,6 +1299,14 @@ onMounted(() => {
   .admin-hero-stats .big-num {
     font-size: 32px;
   }
+  .config-grid { flex-direction: column; }
+  .cfg-card { flex-direction: column; }
+  .add-fields { flex-direction: column; }
+  .add-fields > * { flex-basis: auto; }
+  .table-head, .table-row { flex-wrap: wrap; font-size: 11px; }
+  .table-head > *, .table-row > * { flex-basis: auto; }
+  .audit-row { flex-wrap: wrap; }
+  .audit-row > * { flex-basis: auto; }
 }
 
 /* ====================================================================
@@ -1394,18 +1402,17 @@ onMounted(() => {
    Config grid
    ==================================================================== */
 .config-grid {
-  display: grid;
-  grid-template-columns: 1fr;
+  display: flex;
+  flex-direction: column;
   gap: 12px;
 }
 .cfg-card {
   overflow: hidden;
-  display: grid;
-  grid-template-columns: minmax(140px, max-content) 1fr auto;
+  display: flex;
   align-items: stretch;
 }
 .cfg-key {
-  display: flex;
+  flex: 0 0 180px;
   align-items: center;
   padding: 12px 18px;
   font-size: 12px;
@@ -1415,7 +1422,7 @@ onMounted(() => {
   border-right: 1px solid var(--border);
   word-break: break-all;
 }
-.cfg-value { min-width: 0; }
+.cfg-value { flex: 1; min-width: 0; }
 .cfg-actions {
   display: flex;
   gap: 6px;
@@ -1463,7 +1470,8 @@ onMounted(() => {
   justify-content: space-between;
   gap: 12px;
 }
-.add-fields { display: grid; grid-template-columns: 1fr 2fr auto; gap: 10px; align-items: center; }
+.add-fields { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.add-fields > * { flex: 1 1 180px; min-width: 150px; }
 .cfg-add-title {
   font-family: var(--font-display);
   font-size: 18px;
@@ -1575,13 +1583,26 @@ onMounted(() => {
   border-top: 1px solid var(--border);
 }
 .table-head, .table-row {
-  display: grid;
-  grid-template-columns: 28px 40px 100px 1fr 80px 100px 90px 130px 160px;
+  display: flex;
   gap: 12px;
   align-items: center;
   padding: 12px 18px;
   font-size: 12px;
 }
+.table-head > *, .table-row > :not(.th-check):not(.td-check) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.th-check, .td-check { flex: 0 0 28px; }
+.table-head > :nth-child(2), .table-row > :nth-child(2) { flex: 0 0 40px; }
+.table-head > :nth-child(3), .table-row > :nth-child(3) { flex: 0 0 100px; }
+.table-head > :nth-child(4), .table-row > :nth-child(4) { flex: 1; min-width: 80px; }
+.table-head > :nth-child(5), .table-row > :nth-child(5) { flex: 0 0 80px; }
+.table-head > :nth-child(6), .table-row > :nth-child(6) { flex: 0 0 100px; }
+.table-head > :nth-child(7), .table-row > :nth-child(7) { flex: 0 0 90px; }
+.table-head > :nth-child(8), .table-row > :nth-child(8) { flex: 0 0 130px; }
+.table-head > :nth-child(9), .table-row > :nth-child(9) { flex: 0 0 160px; }
 .table-head {
   border-bottom: 1px solid var(--border);
   background: var(--surface-soft);
@@ -1729,8 +1750,7 @@ onMounted(() => {
 }
 .audit-group-arrow.open { transform: rotate(90deg); }
 .audit-row {
-  display: grid;
-  grid-template-columns: 90px 80px 1fr;
+  display: flex;
   gap: 14px;
   padding: 10px 18px;
   border-bottom: 1px solid var(--border);
@@ -1739,6 +1759,9 @@ onMounted(() => {
   align-items: baseline;
   transition: background var(--dur-fast) var(--ease-out);
 }
+.audit-row > :nth-child(1) { flex: 0 0 90px; }
+.audit-row > :nth-child(2) { flex: 0 0 80px; }
+.audit-row > :nth-child(3) { flex: 1; min-width: 0; }
 .audit-row:last-child { border-bottom: 0; }
 .audit-row:hover { background: var(--surface-hover); }
 .audit-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1766,18 +1789,17 @@ onMounted(() => {
   .topbar { flex-wrap: wrap; gap: 12px; }
   .nav-search { display: none; }
   .admin-hero-stats-section { padding: 16px 0 8px; }
-  .config-grid { grid-template-columns: 1fr; }
-  .cfg-card { grid-template-columns: 1fr; }
+  .cfg-card { flex-direction: column; }
   .cfg-key { border-right: 0; border-bottom: 1px solid var(--border); }
   .cfg-actions { border-left: 0; border-top: 1px solid var(--border); justify-content: flex-end; }
-  .add-fields { grid-template-columns: 1fr; }
-  .table-head, .table-row { grid-template-columns: 24px 30px 80px 1fr 70px 90px 120px; font-size: 11px; }
+  .add-fields { flex-direction: column; }
+  .table-head, .table-row { flex-wrap: wrap; font-size: 11px; }
   .table-head span:nth-child(3),
   .table-head span:nth-child(6),
   .table-row > :nth-child(3),
   .table-row > :nth-child(6) { display: none; }
   .row-actions { flex-wrap: wrap; }
-  .audit-row { grid-template-columns: 80px 1fr; }
+  .audit-row { flex-wrap: wrap; }
   .audit-row > :nth-child(2) { display: none; }  /* hide type badge */
 }
 
@@ -1913,14 +1935,18 @@ onMounted(() => {
   overflow: hidden;
 }
 .streaming-table .row {
-  display: grid;
-  grid-template-columns: 140px 1fr 80px 120px;
+  display: flex;
   gap: 12px;
   padding: 10px 14px;
   font-size: 13px;
   align-items: center;
   border-bottom: 1px solid var(--border);
 }
+.streaming-table .row > :nth-child(1) { flex: 0 0 140px; }
+.streaming-table .row > :nth-child(2) { flex: 1; min-width: 0; }
+.streaming-table .row > :nth-child(3) { flex: 0 0 80px; }
+.streaming-table .row > :nth-child(4) { flex: 0 0 140px; }
+.streaming-table .row > :nth-child(5) { flex: 0 0 120px; }
 .streaming-table .row:last-child { border-bottom: none; }
 .streaming-table .row.head { background: var(--surface-soft); font-size: 12px; }
 

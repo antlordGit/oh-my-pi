@@ -188,8 +188,10 @@ async function onCreateRepo() {
 
 async function onCreateSession() {
   if (!newSessionRepo.value) return msg.warning('请选择仓库')
+  const title = newSessionTitle.value.trim()
+  if (!title) return msg.warning('请输入会话名称')
   try {
-    const s = await createSession(newSessionRepo.value, newSessionTitle.value || '未命名会话')
+    const s = await createSession(newSessionRepo.value, title)
     msg.success('会话已开启')
     newSessionTitle.value = ''; showCreator.value = false
     router.push(`/sessions/${s.sessionId}`)
@@ -494,8 +496,8 @@ onMounted(refresh)
               <option v-if="!repos.length" disabled value="">暂无仓库</option>
               <option v-for="r in repos" :key="r.repoId" :value="r.repoId">{{ r.displayName }} · {{ r.repoId }}</option>
             </select>
-            <input v-model="newSessionTitle" class="field-raw" placeholder="会话标题（可选）" />
-            <button class="btn-primary" :disabled="!newSessionRepo" @click="onCreateSession">
+            <input v-model="newSessionTitle" class="field-raw" placeholder="会话名称（必填）" />
+            <button class="btn-primary" :disabled="!newSessionRepo || !newSessionTitle.trim()" @click="onCreateSession">
               进入工作室
             </button>
           </div>
@@ -880,10 +882,12 @@ onMounted(refresh)
    ==================================================================== */
 .creator { overflow: hidden; }
 .creator-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
+  display: flex;
+  flex-wrap: wrap;
 }
 .creator-card {
+  flex: 1 1 280px;
+  min-width: 0;
   padding: 28px 32px;
   display: flex;
   flex-direction: column;
@@ -1301,8 +1305,8 @@ onMounted(refresh)
    ==================================================================== */
 @media (max-width: 900px) {
   .page { padding: 16px 16px 48px; }
-  .creator-grid { grid-template-columns: 1fr; }
   .creator-card + .creator-card { border-left: 0; border-top: 1px solid var(--border); }
+  .creator-card { flex-basis: 100%; }
   .entry { flex-wrap: wrap; padding: 16px 18px; gap: 14px; }
   .entry-main { flex-basis: 100%; min-width: 0; flex-direction: column; align-items: flex-start; gap: 8px; }
   .entry-l { flex-direction: row; flex: 0 0 auto; align-items: center; gap: 10px; }

@@ -87,8 +87,7 @@ const argSummary = computed(() => {
 .tool--error { border-color: var(--danger); background: var(--danger-soft); }
 
 .tool-head {
-  display: grid;
-  grid-template-columns: 22px auto 1fr auto auto;
+  display: flex;
   gap: 12px;
   align-items: center;
   padding: 10px 16px;
@@ -96,14 +95,17 @@ const argSummary = computed(() => {
   user-select: none;
   transition: background var(--dur-fast) var(--ease-out);
 }
-.tool-head:hover { background: var(--surface-hover); }
-
 .tool-glyph {
+  flex: 0 0 22px;
   font-size: 13px;
   color: var(--ink-mute);
   font-weight: 600;
-  width: 22px; text-align: center;
+  text-align: center;
 }
+.tool-name { flex: 0 0 auto; }
+.tool-status { flex: 1; min-width: 0; }
+.tool-badge { flex: 0 0 auto; }
+.tool-toggle { flex: 0 0 auto; }
 .tool--running .tool-glyph { color: var(--brand); }
 .tool--done .tool-glyph { color: var(--good); }
 .tool--error .tool-glyph { color: var(--danger); }

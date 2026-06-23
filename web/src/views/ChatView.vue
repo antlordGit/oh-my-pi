@@ -708,34 +708,34 @@ async function copyRepoId() {
       </div>
     </header>
 
-    <aside class="chat-index" v-if="!isArchived && userIndex.length">
-      <button class="btn-mini ide-btn chat-index-ide" @click="openIde">
-        <span class="caret">◈</span>
-        <span>打开 IDE</span>
-      </button>
-      <header class="chat-index-head mono">
-        <span class="caret">§</span>
-        <span>索引</span>
-        <span class="dim">{{ userIndex.length }}</span>
-      </header>
-      <ul class="chat-index-list" v-if="userIndex.length">
-        <li
-          v-for="(item, idx) in userIndex"
-          :key="`idx-${item.turnIdx}-${idx}`"
-          class="chat-index-item"
-          :title="item.text"
-          @click="scrollToTurn(item.turnIdx)"
-        >
-          <span class="chat-index-num mono">{{ String(idx + 1).padStart(2, '0') }}</span>
-          <span class="chat-index-text">{{ previewText(item.text) || '(空)' }}</span>
-        </li>
-      </ul>
-      <p class="chat-index-empty mono dim" v-else>暂无操作员消息</p>
-    </aside>
+    <div class="chat-body">
+      <aside class="chat-index" v-if="!isArchived && userIndex.length">
+        <button class="btn-mini ide-btn chat-index-ide" @click="openIde">
+          <span class="caret">◈</span>
+          <span>打开 IDE</span>
+        </button>
+        <header class="chat-index-head mono">
+          <span class="caret">§</span>
+          <span>索引</span>
+          <span class="dim">{{ userIndex.length }}</span>
+        </header>
+        <ul class="chat-index-list" v-if="userIndex.length">
+          <li
+            v-for="(item, idx) in userIndex"
+            :key="`idx-${item.turnIdx}-${idx}`"
+            class="chat-index-item"
+            :title="item.text"
+            @click="scrollToTurn(item.turnIdx)"
+          >
+            <span class="chat-index-num mono">{{ String(idx + 1).padStart(2, '0') }}</span>
+            <span class="chat-index-text">{{ previewText(item.text) || '(空)' }}</span>
+          </li>
+        </ul>
+        <p class="chat-index-empty mono dim" v-else>暂无操作员消息</p>
+      </aside>
+      <WorkspaceTree v-if="!isArchived && showWorkspaceTree" :repo-id="session?.repoId" />
 
-    <WorkspaceTree v-if="!isArchived && showWorkspaceTree" :repo-id="session?.repoId" />
-
-    <main class="messages" ref="messagesEl">
+      <main class="messages" ref="messagesEl">
       <!-- Archived session: locked -->
       <div v-if="isArchived" class="archived-block blur-in">
         <div class="archived-message card">
@@ -880,6 +880,7 @@ async function copyRepoId() {
         </div>
       </div>
     </main>
+  </div>  <!-- /chat-body -->
 
     <!-- Composer — hidden for archived sessions -->
     <footer v-if="!isArchived" class="composer">
@@ -994,25 +995,31 @@ async function copyRepoId() {
 
 <style scoped>
 .chat {
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  grid-template-columns: 200px minmax(0, 1fr) 260px;
-  column-gap: 14px;
+  display: flex;
+  flex-direction: column;
   height: 100dvh;
   max-width: 1240px;
   margin: 0 auto;
   padding: 20px 32px;
   gap: 16px;
 }
-.topbar { grid-column: 1 / -1; }
-.composer { grid-column: 1 / -1; }
+.topbar { flex-shrink: 0; }
+.composer { flex-shrink: 0; }
+
+/* 中间行：三列 flex（索引 / 消息 / 工作区树） */
+.chat-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 14px;
+  overflow: hidden;
+}
 
 /* ====================================================================
    Left-side operator message index
    ==================================================================== */
 .chat-index {
-  grid-column: 1;
-  grid-row: 2;
+  flex: 0 0 200px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -1020,10 +1027,6 @@ async function copyRepoId() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  align-self: start;
-  position: sticky;
-  top: 84px;
-  max-height: calc(100dvh - 110px);
 }
 .chat-index-head {
   display: flex;
@@ -1058,8 +1061,17 @@ async function copyRepoId() {
   margin: 0;
   padding: 6px;
   overflow-y: auto;
+  overflow-x: hidden;
   flex: 1;
   min-height: 0;
+  scrollbar-width: thin;
+}
+.chat-index-list::-webkit-scrollbar {
+  width: 4px;
+}
+.chat-index-list::-webkit-scrollbar-thumb {
+  background: var(--ink-faint);
+  border-radius: 4px;
 }
 .chat-index-item {
   display: flex;
@@ -1104,8 +1116,7 @@ async function copyRepoId() {
    Topbar
    ==================================================================== */
 .topbar {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
+  display: flex;
   align-items: center;
   gap: 16px;
   padding: 10px 14px;
@@ -1114,6 +1125,8 @@ async function copyRepoId() {
   background: var(--surface);
   box-shadow: var(--shadow-card);
 }
+.topbar > :first-child { flex-shrink: 0; }
+.topbar-meta { flex: 1; min-width: 0; }
 .back-btn { padding: 6px 14px; font-size: 12px; }
 .back-btn .caret { font-size: 12px; }
 .topbar-meta {
@@ -1312,6 +1325,8 @@ async function copyRepoId() {
    Messages
    ==================================================================== */
 .messages {
+  flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: 16px 0;
   scroll-behavior: smooth;
@@ -1319,11 +1334,23 @@ async function copyRepoId() {
 
 /* Turns — note: turn-role is now HORIZONTAL (no vertical writing-mode) */
 .turn {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 16px;
+  display: flex;
+  gap: 14px;
+  padding: 12px 0;
   margin-bottom: 28px;
   animation: fade-up var(--dur-slow) var(--ease-out) both;
+}
+.turn-role {
+  flex: 0 0 88px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink-mute);
+  font-weight: 500;
+}
+.turn-role.accent { color: var(--brand); }
+.turn-content {
+  flex: 1;
+  min-width: 0;
 }
 .turn-gutter {
   display: flex;
@@ -1343,14 +1370,8 @@ async function copyRepoId() {
 }
 .turn-num.accent { color: var(--brand); border-color: var(--brand); background: var(--brand-soft); }
 .live-num { animation: gentle-pulse 1.8s var(--ease-out) infinite; }
-.turn-role {
-  font-size: 12px;
-  color: var(--ink-mute);
-  font-weight: 500;
-}
-.turn-role.accent { color: var(--brand); }
 
-.turn-body { min-width: 0; }
+.turn-body { flex: 1; min-width: 0; }
 .turn-label { margin-bottom: 8px; display: flex; justify-content: flex-end; }
 
 /* Thinking */
@@ -1554,15 +1575,13 @@ async function copyRepoId() {
    Mobile collapse
    ==================================================================== */
 @media (max-width: 900px) {
-  .chat { padding: 8px; grid-template-columns: 1fr; max-width: none; }
-  .chat-index { display: none; }
-  .workspace-tree { display: none; }
-  .topbar { grid-template-columns: auto 1fr; gap: 10px; padding: 8px 12px; }
+  .chat { padding: 8px; max-width: none; }
+  .chat-index, .workspace-tree { display: none; }
+  .topbar { gap: 10px; padding: 8px 12px; }
   .topbar-meta { border: 0; padding: 0; gap: 6px; }
   .session-title { font-size: 14px; }
-  .turn { grid-template-columns: 1fr; gap: 4px; }
-  .turn-gutter { flex-direction: row; align-items: center; gap: 8px; padding-top: 0; text-align: left; }
-  .turn-num { font-size: 11px; }
+  .turn { flex-direction: column; gap: 4px; }
+  .turn-role { flex: 0 0 auto; flex-direction: row; align-items: center; gap: 8px; padding-top: 0; }
   .messages { padding: 4px 0; }
   .composer-input-row { flex-wrap: wrap; }
   .composer-input-row .composer-input { padding: 10px 12px !important; }

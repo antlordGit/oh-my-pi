@@ -1,6 +1,7 @@
 package com.yourorg.omp.maintenance;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.yourorg.omp.repo.RepoRepository;
 import com.yourorg.omp.rpc.RpcFrameType;
 import com.yourorg.omp.session.SessionManager;
 import org.slf4j.Logger;
@@ -39,14 +40,17 @@ public class MaintenanceService {
 
     private final RedisTemplate<String, Object> redis;
     private final SessionManager sessionManager;
+    private final RepoRepository repoRepository;
 
     /** 正在推流的会话：sessionId -> 推流开始时间 */
     private final ConcurrentHashMap<String, Instant> streamingSessions = new ConcurrentHashMap<>();
 
     public MaintenanceService(RedisTemplate<String, Object> redis,
-                              SessionManager sessionManager) {
+                              SessionManager sessionManager,
+                              RepoRepository repoRepository) {
         this.redis = redis;
         this.sessionManager = sessionManager;
+        this.repoRepository = repoRepository;
     }
 
     // ------------------------------------------------------------------------
@@ -111,10 +115,17 @@ public class MaintenanceService {
             item.put("streamingSince", e.getValue().toString());
             item.put("streamingSeconds", Duration.between(e.getValue(), Instant.now()).getSeconds());
 
-            // 额外带上会话标题 / 用户（方便前端展示）
+            // 额外带上会话标题 / 用户 / 仓库名称（方便前端展示）
             sessionManager.find(sessionId).ifPresent(m -> {
                 item.put("title", m.getTitle() == null ? "" : m.getTitle());
                 item.put("userId", m.getUserId());
+                item.put("repoId", m.getRepoId());
+                try {
+                    repoRepository.findByUserIdAndRepoId(m.getUserId(), m.getRepoId())
+                        .ifPresent(repo -> item.put("repoName", repo.getDisplayName()));
+                } catch (Exception ignored) {
+                    // 仓库可能已被删除，忽略异常
+                }
             });
             result.add(item);
         }

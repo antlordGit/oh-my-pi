@@ -1,0 +1,43 @@
+// ====================================================================
+// uni.scss — SCSS 变量 & Mixins（通过 vite additionalData 注入所有 scoped style）
+// CSS 自定义属性（--brand 等）已移至 App.vue 全局样式，确保子组件可见
+// ====================================================================
+
+// ------ Typography ------
+$font-display: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+  "Microsoft YaHei", system-ui, sans-serif;
+$font-ui: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue",
+  "Microsoft YaHei", system-ui, sans-serif;
+$font-mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+// iOS 标准字号阶梯
+$fs-title: 34px;
+$fs-h1: 28px;
+$fs-h2: 22px;
+$fs-body: 17px;
+$fs-callout: 16px;
+$fs-sub: 15px;
+$fs-foot: 13px;
+$fs-cap: 12px;
+$fs-cap-2: 11px;
+
+// ------ Radius ------
+$radius: 12px;
+$radius-sm: 8px;
+$radius-xs: 6px;
+$radius-card: 12px;
+$radius-pill: 9999px;
+$radius-bubble: 10px;
+
+// ------ Duration / Easing ------
+$dur-fast: 180ms;
+$dur-base: 260ms;
+$dur-slow: 420ms;
+$ease-out: cubic-bezier(0.4, 0, 0.2, 1);
+$ease-spring: cubic-bezier(0.32, 0.72, 0, 1);
+
+// ------ 主题类（theme-light 仅保留引用，实际 CSS 变量定义在 App.vue 全局样式中）------
+.theme-light {
+  // CSS 变量由 App.vue 全局样式注入，此处仅作为 class 钩子存在
+  // 所有子组件通过 page 元素的 CSS 自定义属性自动继承
+}

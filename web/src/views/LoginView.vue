@@ -111,11 +111,18 @@ async function submit() {
 <style scoped>
 .login {
   min-height: 100dvh;
-  display: grid;
-  grid-template-columns: 1.1fr 0.9fr;
+  display: flex;
   background: var(--canvas);
   position: relative;
   overflow: hidden;
+}
+.login-brand {
+  flex: 1.1;
+  min-width: 0;
+}
+.form-wrapper {
+  flex: 0.9;
+  min-width: 300px;
 }
 
 /* ====================================================================
@@ -293,7 +300,9 @@ async function submit() {
    Mobile collapse
    ==================================================================== */
 @media (max-width: 768px) {
-  .login { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .login { flex-direction: column; }
+  .login-brand { flex: 0 0 auto; }
+  .form-wrapper { flex: 1; }
   .col { padding: 40px 24px; }
   .col-left { gap: 28px; justify-content: flex-start; }
   .hero { margin: 0; }

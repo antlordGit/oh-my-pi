@@ -32,6 +32,8 @@ export interface StreamingSession {
   sessionId: string
   title?: string
   userId?: number
+  repoId?: string
+  repoName?: string
   streamingSince: string
   streamingSeconds: number
 }

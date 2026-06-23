@@ -267,6 +267,8 @@ export interface ToolCallEventResult {
 	block?: boolean;
 	/** Reason for blocking (returned to LLM as error) */
 	reason?: string;
+	/** If set, replace the tool's input parameters with this object (before execution) */
+	updatedInput?: Record<string, unknown>;
 }
 
 /**

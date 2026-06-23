@@ -108,7 +108,7 @@ Hook events are strongly typed in `types.ts`.
 
 ### Tool events (pre/post model)
 
-- `tool_call` (pre-execution) → can return `{ block?: boolean; reason?: string }`
+- `tool_call` (pre-execution) → can return `{ block?: boolean; reason?: string; updatedInput?: Record<string, unknown> }`
 - `tool_result` (post-execution) → can return `{ content?; details?; isError? }`
 
 This is the hook subsystem’s core pre/post interception model.
@@ -139,6 +139,7 @@ tool_call handlers
 - if any handler returns `{ block: true }`, execution stops
 - if handler throws, wrapper fails closed and blocks execution
 - returned `reason` becomes the thrown error text
+- if a handler returns `{ updatedInput }`, that object replaces the tool's input parameters for the underlying call (the LLM is unaware of the rewrite)
 
 ### 2) Tool execution
 
@@ -166,10 +167,11 @@ On tool failure, wrapper emits `tool_result` with `isError: true` and error text
 - tool output content/details on successful tool calls (`tool_result` path)
 - pre-agent injected message via `before_agent_start`
 - cancellation/custom compaction/tree behavior via `session_before_*` and `session.compacting`
+- **tool input parameters on the next execute step** via `tool_call` returning `{ updatedInput }` — the wrapper swaps the params object before invoking the underlying tool, so the LLM is unaware of the rewrite. Used to wrap commands (e.g., `git status` → `rtk git status`), inject defaults, or apply policy transforms.
 
 ### What hooks cannot mutate in this implementation
 
-- raw tool input parameters in-place (only block/allow on `tool_call`)
+- raw tool input parameters **after execution has already started** (`updatedInput` only applies pre-execution)
 - execution continuation after thrown tool errors (error path rethrows)
 - final success/error status in wrapper behavior (returned `isError` is typed but not applied by `HookToolWrapper`)
 
@@ -251,6 +253,37 @@ Hook status text set via `ctx.ui.setStatus(key, text)` is:
 `emitToolCall(...)` is stricter: handler errors are not swallowed there; they propagate to caller. In `HookToolWrapper`, this blocks the tool call (fail-safe).
 
 ## Realistic API examples
+
+### Rewrite tool input pre-execution (`updatedInput`)
+
+Return `{ updatedInput }` from a `tool_call` handler to replace the parameters the underlying tool will receive. The LLM is unaware of the rewrite — the visible behavior is identical, but the executed command is different.
+
+```ts
+import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
+
+export default function (pi: HookAPI): void {
+  pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName !== "bash") return;
+    const input = event.input as Record<string, unknown>;
+    const cmd = String(input.command ?? "");
+    if (!cmd.trim()) return;
+
+    // Ask an external service for a rewritten command (here: RTK).
+    const rewritten = await pi.exec("rtk", ["rewrite", ...cmd.split(/\s+/)], { cwd: ctx.cwd });
+    const next = rewritten.stdout.trim();
+    if (!next || next === cmd) return;
+
+    return {
+      updatedInput: { ...input, command: next },
+    };
+  });
+}
+```
+
+Notes:
+- Compound commands are forwarded as a single string — let the rewrite tool handle segmentation.
+- `pi.exec` failures should `return` without `updatedInput` (fail-open), so the original command runs.
+- The same shape works for `write` / `edit` (override `path`/`content`) and any tool whose input is a plain object.
 
 ### Block unsafe bash commands
 

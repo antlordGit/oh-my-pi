@@ -1,0 +1,50 @@
+{
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^u-(.*)": "uview-plus/components/u-$1/u-$1.vue",
+      "mp-html": "mp-html/dist/uni-app/components/mp-html/mp-html.vue"
+    }
+  },
+  "pages": [
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "black",
+        "navigationBarBackgroundColor": "#ededed",
+        "backgroundColor": "#ededed"
+      }
+    },
+    {
+      "path": "pages/sessions/sessions",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "black",
+        "navigationBarBackgroundColor": "#ededed",
+        "backgroundColor": "#ededed",
+        "enablePullDownRefresh": true,
+        "backgroundColorTop": "#ededed",
+        "backgroundTextStyle": "dark"
+      }
+    },
+    {
+      "path": "pages/chat/chat",
+      "style": {
+        "navigationStyle": "custom",
+        "navigationBarTextStyle": "black",
+        "navigationBarBackgroundColor": "#ededed",
+        "backgroundColor": "#ededed"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "OMP",
+    "navigationBarBackgroundColor": "#ededed",
+    "backgroundColor": "#ededed",
+    "app-plus": {
+      "background": "#ededed"
+    }
+  }
+}

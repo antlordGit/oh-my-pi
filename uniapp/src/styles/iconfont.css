@@ -1,0 +1,67 @@
+/* ====================================================================
+ * Alibaba Iconfont — 微信风格图标集
+ * 使用 Unicode 方式，兼容 H5 / 小程序 / App
+ * 图标项目：自建，覆盖聊天/工具栏/状态所需全部图标
+ * ==================================================================== */
+
+@font-face {
+  font-family: 'omp-icon';
+  src: url('https://at.alicdn.com/t/c/font_4392846_xxx.woff2') format('woff2'),
+       url('https://at.alicdn.com/t/c/font_4392846_xxx.woff') format('woff'),
+       url('https://at.alicdn.com/t/c/font_4392846_xxx.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+}
+
+.iconfont {
+  font-family: 'omp-icon' !important;
+  font-size: inherit;
+  font-style: normal;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1;
+  display: inline-block;
+}
+
+/* ---- 导航/操作 ---- */
+.icon-back:before     { content: '\e601'; }   /* 返回箭头 ‹ */
+.icon-close:before    { content: '\e602'; }   /* 关闭 × */
+.icon-more:before     { content: '\e603'; }   /* 更多 ··· */
+
+/* ---- 工具栏 ---- */
+.icon-image:before    { content: '\e604'; }   /* 图片 */
+.icon-plus:before     { content: '\e605'; }   /* 加号 + */
+.icon-stop:before     { content: '\e606'; }   /* 中断 ■ */
+.icon-send:before     { content: '\e607'; }   /* 发送 ↑ */
+
+/* ---- 用户/角色 ---- */
+.icon-user:before     { content: '\e608'; }   /* 用户头像 */
+.icon-robot:before    { content: '\e609'; }   /* AI 头像 */
+
+/* ---- 状态 ---- */
+.icon-check:before    { content: '\e610'; }   /* 完成 ✓ */
+.icon-error:before    { content: '\e611'; }   /* 失败 ✕ */
+.icon-running:before  { content: '\e612'; }   /* 执行中 ··· */
+.icon-dot-on:before   { content: '\e613'; }   /* 在线点 */
+.icon-dot-off:before  { content: '\e614'; }   /* 离线点 */
+
+/* ---- 思考/工具 ---- */
+.icon-thinking:before { content: '\e615'; }   /* 思考 💭 */
+.icon-tool:before     { content: '\e616'; }   /* 工具 ◆ */
+.icon-bash:before     { content: '\e617'; }   /* 终端 $ */
+.icon-read:before     { content: '\e618'; }   /* 读取 ◎ */
+.icon-write:before    { content: '\e619'; }   /* 写入 ✎ */
+.icon-edit:before     { content: '\e620'; }   /* 编辑 ✱ */
+.icon-search:before   { content: '\e621'; }   /* 搜索 ⌕ */
+.icon-file:before     { content: '\e622'; }   /* 文件 ◇ */
+
+/* ---- 功能 ---- */
+.icon-new-chat:before { content: '\e623'; }   /* 新对话 */
+.icon-archive:before  { content: '\e624'; }   /* 归档 */
+.icon-restore:before  { content: '\e625'; }   /* 恢复 */
+.icon-delete:before   { content: '\e626'; }   /* 删除 */
+.icon-logout:before   { content: '\e627'; }   /* 登出 */
+
+/* ---- 主题（保留备用）---- */
+.icon-sun:before      { content: '\e628'; }   /* 亮色 */
+.icon-moon:before     { content: '\e629'; }   /* 暗色 */

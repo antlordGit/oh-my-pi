@@ -212,9 +212,8 @@ defineExpose({ refresh })
   --t-bg2:    var(--surface-soft, #F7F8FA);
   --t-r:      var(--radius, 12px);
 
-  grid-column: 3;
-  grid-row: 2;
   position: relative;
+  flex: 0 0 260px;
   border: 1px solid var(--t-line);
   border-radius: var(--t-r);
   background: var(--t-bg);
@@ -222,7 +221,7 @@ defineExpose({ refresh })
   display: flex;
   flex-direction: column;
   overflow: hidden; /* FileEditor slides inside this boundary */
-  align-self: start;
+  align-self: flex-start;
   top: 84px;
   max-height: calc(100dvh - 110px);
   font-family: var(--font-mono);

@@ -1,5 +1,9 @@
 # omp web — 多用户编码平台
 
+> [!NOTE] **文档定位**：本文档面向**本地开发**（`mvn spring-boot:run`）和**Docker Compose 备选部署**。
+> **生产部署**（omp-allinone 镜像 + nginx + code-server 容器）的完整 Runbook 见
+> [`docs/DEPLOY.md`](./docs/DEPLOY.md)，含 Maven 3.9.9、CodeGraph、持久化卷等详细配置。
+
 把 `omp --mode rpc` 装进 Web：前端 Vue 对话框 → 后端 Java 编排 omp 子进程 → MySQL 审计 + 用户隔离 + 文件落本地磁盘。
 
 参考上游文档：`docs/rpc.md`、`docs/environment-variables.md`、`python/robomp/` 的 worker 模式。
@@ -12,9 +16,11 @@ Vue 3 + Vite + Naive UI  →  Spring Boot 3 + MySQL  →  omp --mode rpc × N
 ```
 
 每用户每 session 一个 omp 子进程：
-- 启动参数：`--cwd /srv/omp/workspaces/<userId>/<repoId>` + `PI_CODING_AGENT_DIR=/srv/omp/agent/<userId>` + `--api-key <统一 key>`
+- 启动参数：`--cwd {workspaces-root}/<userId>/<repoId>` + `PI_CODING_AGENT_DIR={agent-root}/<userId>` + `--api-key <统一 key>`
+  （生产 omp-allinone：`workspaces-root=/data/omp/workspaces`、`agent-root=/data/omp/agent`；本地开发：`workspaces-root=/tmp/omp/workspaces` 等，见 application.yml）
 - 用户代码目录自动 `git init`，每个 tool 调用结束后自动 commit（代码历史可见）
 - session JSONL 由 omp 自己写到 `<agentDir>/sessions/...`，Java 只记录业务审计
+- **CodeGraph MCP** 通过 `{agent-root}/<userId>/mcp.json` 自动接入（生产模板 `/etc/omp/codegraph-mcp.json` 由 Java 端按用户 cp，详见 DEPLOY.md §20.8）
 
 ## 目录结构
 
@@ -40,6 +46,10 @@ deploy/                  docker-compose + Dockerfile + nginx.conf
 ```
 
 ## 快速启动
+
+> [!IMPORTANT] 以下 §快速启动 是 **docker-compose 备选路线**（轻量、单机、本地试跑用）。
+> 生产服务器（10.126.2.120 UAT）已切换到 **omp-allinone 单镜像 + nginx + code-server** 三容器架构，
+> 完整流程见 [`docs/DEPLOY.md` §18.4](./docs/DEPLOY.md)。两种路线**互斥**——卷路径、镜像、配置都不同。
 
 ### 0. 前置条件
 - 已安装 `omp` CLI（版本 ≥ 15.x，命令 `omp --version` 可用）
@@ -71,7 +81,7 @@ backend 容器通过 `/usr/local/bin/omp` 调用 CLI。最简单：在宿主机�
 # deploy/docker-compose.yml 中 backend service 加：
 volumes:
   - /usr/local/bin/omp:/usr/local/bin/omp:ro
-  - omp-data:/srv/omp
+  - omp-data:/srv/omp              # docker-compose 路线的卷挂载点（与 omp-allinone 的 /data/omp/* 无关）
 ```
 
 或在容器内独立安装 omp（修改 Dockerfile）。
@@ -129,13 +139,16 @@ curl -X POST localhost:8080/api/sessions/<SESSION_ID>/prompt \
 
 ## 配置项（`backend/src/main/resources/application.yml`）
 
+> 以下为 application.yml 的默认值。**生产 omp-allinone** 覆盖为 `/data/omp/*`
+> （见 `application-120.yml` 和 [`docs/DEPLOY.md` §18.4](./docs/DEPLOY.md) 的 `prod-application.yml`）。
+
 ```yaml
 app:
   omp:
-    binary: /usr/local/bin/omp               # CLI 路径
-    workspaces-root: /srv/omp/workspaces     # 用户代码根
-    agent-root: /srv/omp/agent               # 用户 omp agent dir
-    stderr-log-dir: /srv/omp/logs            # 子进程 stderr 日志
+    binary: ${OMP_BIN:/usr/local/bin/omp}         # CLI 路径（生产：/app/omp/scripts/omp-dev.sh）
+    workspaces-root: ${OMP_WORKSPACES_ROOT:/tmp/omp/workspaces}   # 用户代码根
+    agent-root: ${OMP_AGENT_ROOT:/tmp/omp/agent}                   # 用户 omp agent dir
+    stderr-log-dir: /tmp/omp/logs                 # 子进程 stderr 日志
     pool:
       max-concurrent: 10                     # 进程池上限
       idle-ttl-minutes: 30                   # idle 多少分钟后 kill
@@ -224,6 +237,8 @@ mvn spring-boot:run \
   -DOMP_DB_URL=jdbc:mysql://localhost:3306/omp \
   -DOMP_DB_USER=omp -DOMP_DB_PASSWORD=omp \
   -DOMP_BIN=/usr/local/bin/omp \
+  -DOMP_WORKSPACES_ROOT=/tmp/omp/workspaces \
+  -DOMP_AGENT_ROOT=/tmp/omp/agent \
   -DOMP_API_KEY=$OMP_API_KEY \
   -DOMP_JWT_SECRET=dev-secret-please-change-32chars
 
@@ -234,6 +249,10 @@ npm run dev   # http://localhost:5173
 ```
 
 Vite proxy 会把 `/api`、`/admin`、`/ws` 转发到 `localhost:8080`。
+
+> **本地开发的 CodeGraph MCP**：`OmpRpcClientFactory.copyTemplateIfAbsent()` 会查 `/etc/omp/codegraph-mcp.json`，
+> 本地通常不存在 → 静默跳过，omp 进程照常启动（只是没 CodeGraph MCP）。要本地启用，可手工写
+> 一份 `$OMP_AGENT_ROOT/<your-username>/mcp.json`（参考 DEPLOY.md §20.8 模板）。
 
 ## 安全注意
 
@@ -246,7 +265,7 @@ Vite proxy 会把 `/api`、`/admin`、`/ws` 转发到 `localhost:8080`。
 ## 已知限制
 
 - **OAuth 类 provider（openai-codex 等）不支持**：本期只支持 `--api-key`
-- **MCP 集成**：服务端配置层开启，Web 不可配
+- **MCP 集成**：omp 子进程通过 `{agent-root}/<userId>/mcp.json` 自动加载 MCP servers。生产 omp-allinone 镜像已经 L2 集成 **CodeGraph MCP server**（`mcp__codegraph__codegraph_explore` 等工具自动出现在 agent 工具集），详见 [`docs/DEPLOY.md` §20.8](./docs/DEPLOY.md)。**Web 不可配** MCP，要改服务端模板。
 - **协作 / collab 不做**：单用户单 session
 - **超大 session 文件**：`get_messages` 一次性返回，无分页
 - **进程死亡恢复**：下次 prompt 自动重启（kill → 新进程 → resume）

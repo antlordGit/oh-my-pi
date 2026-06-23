@@ -1,0 +1,95 @@
+{
+  "name": "OMP 工作站",
+  "appid": "__UNI__OMP001",
+  "description": "OMP - AI 编码工作站（uni-app 跨端版）",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "splashscreen": {
+      "alwaysShowBeforeRender": true,
+      "waiting": true,
+      "autoclose": true,
+      "delay": 0
+    },
+    "modules": {},
+    "distribute": {
+      "android": {
+        "permissions": [
+          "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+          "<uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\"/>",
+          "<uses-permission android:name=\"android.permission.CAMERA\"/>"
+        ]
+      },
+      "ios": {},
+      "sdkConfigs": {}
+    }
+  },
+
+  "quickapp": {},
+
+  "mp-weixin": {
+    "appid": "wxXXXXXXXXXXXXXXXX",
+    "setting": {
+      "urlCheck": false,
+      "minified": true,
+      "es6": true,
+      "postcss": true
+    },
+    "usingComponents": true,
+    "permission": {
+      "scope.userLocation": {
+        "desc": "OMP 不会使用您的地理位置"
+      }
+    },
+    "requiredBackgroundModes": []
+  },
+
+  "mp-alipay": {
+    "usingComponents": true
+  },
+
+  "mp-baidu": {
+    "usingComponents": true
+  },
+
+  "mp-toutiao": {
+    "usingComponents": true
+  },
+
+  "h5": {
+    "title": "OMP 工作站",
+    "router": {
+      "mode": "history",
+      "base": "/"
+    },
+    "devServer": {
+      "https": false,
+      "port": 5174,
+      "proxy": {
+        "/api": {
+          "target": "http://localhost:8080",
+          "changeOrigin": true
+        },
+        "/ws": {
+          "target": "ws://localhost:8080",
+          "changeOrigin": true,
+          "ws": true
+        }
+      }
+    }
+  },
+
+  "vueVersion": "3",
+
+  "networkTimeout": {
+    "request": 30000,
+    "connectSocket": 30000,
+    "uploadFile": 120000,
+    "downloadFile": 120000
+  }
+}

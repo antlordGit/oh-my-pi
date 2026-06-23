@@ -29,6 +29,7 @@ public class IdeService {
     private final CurrentUser currentUser;
     private final UserRepository users;
     private final SessionManager sessions;
+    private final WorkspaceSigner signer;
 
     public IdeService(OmpProperties props, CurrentUser currentUser,
                        UserRepository users, SessionManager sessions) {
@@ -36,6 +37,7 @@ public class IdeService {
         this.currentUser = currentUser;
         this.users = users;
         this.sessions = sessions;
+        this.signer = new WorkspaceSigner(props.ide().signingKey());
     }
 
     /**
@@ -64,7 +66,9 @@ public class IdeService {
 
         String base = props.ide().publicBaseUrl();
         if (base.endsWith("/")) base = base.substring(0, base.length() - 1);
-        return base + "/?folder=" + workspacePath.toString();
+        String folder = workspacePath.toString();
+        String param = signer.enabled() ? "folder=" + folder + signer.signParam(folder) : "folder=" + folder;
+        return base + "/?" + param;
     }
 
     /**

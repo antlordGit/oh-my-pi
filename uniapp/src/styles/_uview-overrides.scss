@@ -1,0 +1,55 @@
+/**
+ * uView UI 主题覆盖
+ * 将 uView 主色与所有 OMP 设计令牌统一
+ */
+
+// 用 CSS 变量覆盖 uView 内部硬编码色值
+.u-button--primary {
+  background-color: var(--brand) !important;
+  border-color: var(--brand) !important;
+  color: var(--ink-invert) !important;
+}
+
+.u-button--primary:active {
+  background-color: var(--brand-pressed) !important;
+}
+
+.u-button--primary[disabled] {
+  opacity: 0.45 !important;
+}
+
+.u-input {
+  background-color: var(--surface) !important;
+  color: var(--ink) !important;
+}
+
+.u-input__content {
+  background-color: var(--surface) !important;
+}
+
+.u-input__content__field-wrapper__field {
+  color: var(--ink) !important;
+}
+
+.u-input--border {
+  border-color: var(--border) !important;
+}
+
+.u-input--border:focus {
+  border-color: var(--brand) !important;
+}
+
+.u-popup {
+  background-color: var(--surface) !important;
+}
+
+.u-toast {
+  background-color: var(--surface) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-card) !important;
+}
+
+.u-loading-page {
+  background-color: var(--bg) !important;
+}

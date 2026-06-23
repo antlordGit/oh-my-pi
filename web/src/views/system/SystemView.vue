@@ -228,13 +228,14 @@ onMounted(() => {
    ==================================================================== */
 .hero-stats-section { padding: 12px 0 8px; position: relative; z-index: 1; }
 .hero-stats {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
 /* 卡片骨架 */
 .stat-cell {
+  flex: 1 1 180px;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -341,17 +342,11 @@ onMounted(() => {
 }
 .stat-cell:hover .stat-num::after { width: 56px; }
 
-/* 移动端：5 列 → 2 列 */
 @media (max-width: 900px) {
-  .hero-stats { grid-template-columns: repeat(3, 1fr); }
-  .stat-cell { min-height: 110px; padding: 14px 14px 14px 18px; }
+  .stat-cell { flex-basis: calc(33.33% - 8px); }
 }
 @media (max-width: 600px) {
-  .hero-stats { grid-template-columns: repeat(2, 1fr); }
-  .stat-cell { min-height: 100px; padding: 12px 12px 12px 16px; }
-  .stat-spark { display: none; }
-  .stat-num { font-size: 26px; }
-  .stat-num::after { width: 24px; margin-top: 4px; }
+  .stat-cell { flex-basis: calc(50% - 6px); }
 }
 
 /* Tabs */

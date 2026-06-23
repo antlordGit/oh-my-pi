@@ -1,0 +1,9 @@
+// ====================================================================
+// 设计令牌 — 入口
+// 该文件被 vite.config.ts 通过 additionalData 自动注入到所有
+// <style lang="scss"> 中。
+// CSS custom properties 在 uni.scss 中通过 .theme-dark / .theme-light
+// 类名作用域生效，由各页面根 <view> 的主题 class 切换。
+// ====================================================================
+
+@import "../uni.scss";

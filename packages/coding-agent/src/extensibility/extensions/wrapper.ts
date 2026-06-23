@@ -75,7 +75,7 @@ export function wrapRegisteredTools(registeredTools: RegisteredTool[], runner: E
 
 /**
  * Wraps a tool with extension callbacks for interception.
- * - Emits tool_call event before execution (can block)
+ * - Emits tool_call event before execution (can block or rewrite input)
  * - Emits tool_result event after execution (can modify result)
  */
 export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetails = unknown>
@@ -142,7 +142,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			}
 		}
 
-		// 2. Emit tool_call event - extensions can block execution
+		// 2. Emit tool_call event - extensions can block execution or rewrite input
 		if (this.runner.hasHandlers("tool_call")) {
 			try {
 				const callResult = (await this.runner.emitToolCall({
@@ -155,6 +155,11 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				if (callResult?.block) {
 					const reason = callResult.reason || "Tool execution was blocked by an extension";
 					throw new Error(reason);
+				}
+
+				// Extension can rewrite input parameters (e.g., wrap commands with rtk)
+				if (callResult?.updatedInput) {
+					params = callResult.updatedInput as Static<TParameters>;
 				}
 			} catch (err) {
 				if (err instanceof Error) {
