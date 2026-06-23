@@ -1,0 +1,31 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: demo
+  datasource:
+    # TODO: 修改为你自己的 MySQL 连接信息
+    url: jdbc:mysql://localhost:3306/demo?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+    username: root
+    password: root
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.MySQLDialect
+        format_sql: true
+    show-sql: true
+  data:
+    redis:
+      # TODO: 修改为你自己的 Redis 连接信息
+      host: localhost
+      port: 6379
+      password:
+      database: 0
+
+logging:
+  level:
+    com.example.demo: DEBUG
