@@ -25,4 +25,9 @@ export default defineConfig({
     // SPA history fallback: serve index.html for any path not matched by a file or proxy rule
     historyApiFallback: true,
   },
+  // Fix: Bun runtime fails to rename large non-empty dirs on macOS, leaving
+  // deps stuck in a deps_temp_xxx folder and forcing 504s. Commit eagerly.
+  optimizeDeps: {
+    holdUntilCrawlEnd: false,
+  },
 })
